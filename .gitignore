@@ -1,0 +1,28 @@
+# Secrets and local state - never package these.
+.env
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Runtime state
+data/
+logs/
+*.db
+*.db-wal
+*.db-shm
+dist/
+build/
+
+# Downloaded installers / models
+*.exe
+*.msi
+*.gguf
+
+# OS noise
+Thumbs.db
+.DS_Store

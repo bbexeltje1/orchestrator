@@ -1,0 +1,137 @@
+# Configuration
+
+Configuration is read from `config/config.yaml`, then overridden by `.env`,
+then by environment variables. Precedence (lowest → highest):
+
+```
+built-in defaults  <  config/config.yaml  <  .env  <  process environment
+```
+
+Environment overrides use the form `DRIFTLINE_<SECTION>_<KEY>`, e.g.
+`DRIFTLINE_WORKFLOW_DRY_RUN=false`.
+
+## project
+
+| Key | Default | Notes |
+|---|---|---|
+| `name` | `DRIFTLINE` | project identifier stored on every task |
+| `repository` | `auto` | `auto` searches upward for `.git` |
+| `default_branch` | `auto` | `auto` resolves to `main` |
+| `workspace_root` | `.` | base for relative paths |
+
+## qwen
+
+| Key | Default | Notes |
+|---|---|---|
+| `enabled` | `true` | |
+| `provider` | `llama_cpp` | |
+| `base_url` | `http://127.0.0.1:8090/v1` | your existing server |
+| `model` | `auto` | discovered from `/v1/models` |
+| `timeout` | `60.0` | seconds |
+| `max_tokens` | `4096` | |
+
+Your llama.cpp installation and model are never modified.
+
+## omniroute
+
+| Key | Default | Notes |
+|---|---|---|
+| `enabled` | `false` | optional |
+| `base_url` | `http://127.0.0.1:20128` | |
+| `health_path` | `/health` | probed before routing is enabled |
+| `api_key_env` | `OMNIROUTE_API_KEY` | name of the env var, not the secret |
+
+Routing is only enabled after a real health check **and** a real chat-route
+completion both succeed. Otherwise traffic stays direct.
+
+## thx
+
+| Key | Default | Notes |
+|---|---|---|
+| `enabled` | `true` | if unavailable, fallback mode |
+| `provider` | `ollama` | |
+| `base_url` | `http://127.0.0.1:11434` | |
+| `model` | `HAL-X/thx-02:q4_k_m` | |
+| `decision_endpoint` | `/v1/systemone` | System One contract |
+| `timeout` | `60.0` | seconds |
+| `min_confidence` | `0.55` | below this the decision escalates |
+| `allow_fallback_chat` | `true` | degraded, marked `UNVERIFIED` |
+
+## arena
+
+| Key | Default | Notes |
+|---|---|---|
+| `enabled` | `true` | |
+| `transport` | `auto` | `auto` \| `streamable_http` \| `stdio` |
+| `endpoint` | `http://127.0.0.1:17864/mcp` | your local bridge |
+| `stdio_command` | `""` | e.g. `npx -y …` for an MCP stdio server |
+| `task_tool` | `auto` | discovered from `tools/list` |
+| `status_tool` | `auto` | discovered |
+| `result_tool` | `auto` | discovered |
+| `token_env` | `ARENA_BRIDGE_TOKEN` | env var name only |
+| `request_timeout` | `30.0` | also the dispatch timeout |
+| `poll_interval` | `10.0` | seconds |
+| `poll_max` | `120` | maximum status polls |
+| `backoff_base` | `2.0` | exponential backoff multiplier |
+
+The real tool names and schemas are discovered at runtime. See
+`KNOWN_LIMITATIONS.md` for the current Arena status.
+
+## workflow
+
+| Key | Default | Notes |
+|---|---|---|
+| `autonomy` | `hybrid` | `hybrid` \| `manual` \| `autonomous` |
+| `max_parallel_tasks` | `1` | |
+| `max_retries` | `2` | explicit retries only |
+| `dry_run` | `true` | **no Arena call while true** |
+| `require_approval_for_merge` | `true` | |
+| `require_approval_for_publish` | `true` | |
+| `safe_idle_on_start` | `true` | |
+| `poll_interval` | `10.0` | seconds |
+
+## verification
+
+| Key | Default | Notes |
+|---|---|---|
+| `run_git_checks` | `true` | |
+| `run_tests` | `true` | |
+| `run_rojo_build` | `false` | enable for Rojo projects |
+| `luau_lsp_command` | `""` | e.g. `luau-analyze .` |
+| `roblox_studio_diagnostics` | `false` | never opens Play mode |
+
+## logging
+
+| Key | Default |
+|---|---|
+| `level` | `INFO` |
+| `log_file` | `logs/orchestrator.log` |
+| `redact_secrets` | `true` |
+| `max_bytes` | `5242880` |
+| `backup_count` | `3` |
+
+## storage
+
+| Key | Default |
+|---|---|
+| `database` | `data/orchestrator.db` |
+
+## server
+
+| Key | Default | Notes |
+|---|---|---|
+| `bind_host` | `127.0.0.1` | loopback only; validated |
+| `port` | `17870` | |
+| `enabled` | `false` | no listener by default |
+
+## Secrets
+
+Put secrets in `.env` (created from `.env.example`):
+
+```dotenv
+ARENA_BRIDGE_TOKEN=
+OMNIROUTE_API_KEY=
+GITHUB_TOKEN=
+```
+
+`.env` is excluded from Git and from the ZIP. Never commit it.

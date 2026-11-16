@@ -1,0 +1,77 @@
+# Copy to config.yaml. Values here are the safe defaults.
+
+project:
+  name: DRIFTLINE
+  repository: auto
+  default_branch: auto
+  workspace_root: .
+
+qwen:
+  enabled: true
+  provider: llama_cpp
+  base_url: http://127.0.0.1:8090/v1
+  model: auto
+  timeout: 60.0
+  max_tokens: 4096
+
+omniroute:
+  enabled: false
+  base_url: http://127.0.0.1:20128
+  health_path: /health
+  api_key_env: OMNIROUTE_API_KEY
+
+thx:
+  enabled: true
+  provider: ollama
+  base_url: http://127.0.0.1:11434
+  model: HAL-X/thx-02:q4_k_m
+  decision_endpoint: /v1/systemone
+  timeout: 60.0
+  min_confidence: 0.55
+  allow_fallback_chat: true
+
+arena:
+  enabled: true
+  transport: auto
+  endpoint: auto
+  stdio_command: ""
+  task_tool: auto
+  status_tool: auto
+  result_tool: auto
+  token_env: ARENA_BRIDGE_TOKEN
+  request_timeout: 30.0
+  poll_interval: 10.0
+  poll_max: 120
+  backoff_base: 2.0
+
+workflow:
+  autonomy: hybrid
+  max_parallel_tasks: 1
+  max_retries: 2
+  dry_run: true
+  require_approval_for_merge: true
+  require_approval_for_publish: true
+  safe_idle_on_start: true
+  poll_interval: 10.0
+
+verification:
+  run_git_checks: true
+  run_tests: true
+  run_rojo_build: false
+  luau_lsp_command: ""
+  roblox_studio_diagnostics: false
+
+logging:
+  level: INFO
+  log_file: logs/orchestrator.log
+  redact_secrets: true
+  max_bytes: 5242880
+  backup_count: 3
+
+storage:
+  database: data/orchestrator.db
+
+server:
+  bind_host: 127.0.0.1
+  port: 17870
+  enabled: false

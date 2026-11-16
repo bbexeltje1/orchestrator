@@ -1,0 +1,3 @@
+# Test/build dependencies (installed by start.ps1 -Test and the packager)
+-r requirements.txt
+pytest==9.2.0

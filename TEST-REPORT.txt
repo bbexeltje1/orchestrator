@@ -1,0 +1,80 @@
+DRIFTLINE ORCHESTRATOR v1.0.1 - TEST REPORT
+Generated (UTC): 2026-11-16T14:22:43Z
+Interpreter: 3.13.18
+
+CHANGE IN v1.0.1
+----------------
+Fixed: .\start.ps1 -Doctor on a fresh extraction failed because
+$Script:VenvPython was used before Initialize-VirtualEnv ran.
+The -Doctor branch now validates Windows/PowerShell, checks internet,
+initializes the user-local Python runtime, creates the virtual
+environment, installs pinned runtime dependencies, then runs the
+diagnostic report. No Ollama install, no THX-02 download, no Arena
+dispatch and no idle mode occur in -Doctor.
+
+OFFLINE TEST SUITE
+------------------
+tests=97 failures=0 errors=0 skipped=0 duration=53.870s
+
+Test modules:
+  tests/test_arena.py: 11
+  tests/test_config.py: 8
+  tests/test_database.py: 7
+  tests/test_dispatch_safety.py: 7
+  tests/test_packaging.py: 4
+  tests/test_policy.py: 8
+  tests/test_qwen.py: 9
+  tests/test_state_machine.py: 7
+  tests/test_task_manager.py: 9
+  tests/test_thx02.py: 11
+  tests/test_verification.py: 9
+  tests/test_workflow.py: 7
+
+All external services were replaced by local stubs speaking the real
+protocols (MCP Streamable HTTP + stdio, Ollama /v1/systemone,
+OpenAI-compatible /v1/chat/completions). No test contacted a real
+Arena, Ollama, Qwen or OmniRoute instance.
+
+FRESH-INSTALL VERIFICATION (build host, no pre-existing .venv)
+-----------------------------------------------------------
+  1. Removed .venv; ran: pwsh -NoProfile -File ./start.ps1 -Doctor
+     -> created .venv, installed PyYAML 6.0.3 + httpx 0.28.1, ran the
+        report, exit code 0.
+  2. Re-ran with existing .venv -> reused it (no re-create), exit 0.
+  3. Ran with a fake ollama on PATH -> ollama was NOT invoked.
+  4. PowerShell 7.4.6 parser: start.ps1/stop.ps1/doctor.ps1/test.ps1 OK.
+  5. Extracted the v1.0.1 ZIP to a clean directory and re-ran the
+     full offline suite -> 97 passed.
+
+READINESS PROBE (build host has no live AI services)
+-----------------------------------------------------
+  DRIFTLINE ORCHESTRATOR
+  ======================
+  
+  Python runtime           PASS
+  Dependencies             PASS
+  SQLite                   PASS
+  Qwen local               BLOCKED
+  OmniRoute                NOT_CONFIGURED
+  THX-02                   BLOCKED
+  Arena MCP                BLOCKED
+  Arena tools discovered   BLOCKED
+  Arena task capability    UNVERIFIED
+  Git repository           PASS
+  Workflow                 IDLE
+  
+  Errors:
+    - configured endpoint: McpTransportError: streamable HTTP request failed: [Errno 111] Connection refused
+    - transport streamable_http at configured endpoint could not be established: streamable HTTP request failed: [Errno 111] Connection refused
+    - ARENA_NOT_CONNECTED: no MCP transport could be established. The orchestrator will run in fallback mode and will not dispatch implementation tasks.
+
+ARENA INTEGRATION STATUS
+------------------------
+Adapter IMPLEMENTED and TESTED against a real local MCP server
+(Streamable HTTP and stdio) with runtime tool/schema discovery.
+Live bridge at 127.0.0.1:17864 is UNVERIFIED from the build host;
+on the target machine run:  .\start.ps1 -Doctor
+
+HOW TO RUN ON WINDOWS
+---------------------
+  .\start.ps1
