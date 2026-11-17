@@ -131,6 +131,31 @@ adapt the adapter. The orchestrator will not guess.
 does not supply. The task is marked `BLOCKED` with the missing property names.
 Map that property in `ArenaAdapter.build_dispatch_arguments`.
 
+## Claude Code
+
+Claude Code is the actual coding agent. DRIFTLINE runs the **official CLI**
+with **your own subscription login** — it never reads, stores or replaces your
+credentials with an API key.
+
+**`Claude Code installed BLOCKED`** — the CLI was not found. Install it from
+https://claude.com/claude-code (or `npm install -g @anthropic-ai/claude-code`),
+then set `claude_code.command` in `config\config.yaml` if the executable is not
+on PATH.
+
+**`Claude Code authenticated FAIL`** — the CLI is installed but not logged in.
+Run `claude login` once and sign in with your Claude subscription. DRIFTLINE
+never works around this check.
+
+**`Claude Code execution available BLOCKED`** — the real probe invocation
+failed. If the detail says `unknown option`, your CLI version is too old for
+headless `--output-format json`; update the CLI (`claude update`). Any other
+text is the CLI's own error, shown verbatim.
+
+**Verifying end-to-end** — run `claude-acceptance` in the console. It creates a
+disposable repository under `run\`, asks Claude Code to create one test file,
+runs the test, and prints the agent's actual output, exit status and
+PASS/FAIL. Your project files are never touched.
+
 ## Tests
 
 **`Offline tests FAIL`** — run `.\.venv\Scripts\python.exe -m pytest -q` manually

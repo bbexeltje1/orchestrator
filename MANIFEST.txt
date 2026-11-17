@@ -15,6 +15,7 @@ orchestrator/__init__.py
 orchestrator/__main__.py
 orchestrator/agents/__init__.py
 orchestrator/agents/arena.py
+orchestrator/agents/claude_code.py
 orchestrator/app.py
 orchestrator/cli.py
 orchestrator/config.py
@@ -52,6 +53,7 @@ tests/stubs/http_servers.py
 tests/stubs/mcp_server.py
 tests/stubs/stdio_mcp_server.py
 tests/test_arena.py
+tests/test_claude_code.py
 tests/test_cli.py
 tests/test_config.py
 tests/test_database.py

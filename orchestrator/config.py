@@ -66,6 +66,15 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "poll_max": 120,
         "backoff_base": 2.0,
     },
+    "claude_code": {
+        "enabled": True,
+        "command": "claude",
+        "timeout": 600.0,
+        "probe_timeout": 90.0,
+        "model": "",
+        "permission_mode": "acceptEdits",
+        "extra_args": "",
+    },
     "workflow": {
         "autonomy": "hybrid",
         "max_parallel_tasks": 1,
@@ -164,6 +173,26 @@ class ArenaConfig:
 
 
 @dataclass
+class ClaudeCodeConfig:
+    """Official Claude Code CLI executor.
+
+    The orchestrator never reads, stores or exports Claude credentials - the
+    CLI uses its own subscription login (see SECURITY.md). ``command`` is the
+    executable name or path; ``permission_mode`` must remain a non-bypassing
+    mode (``acceptEdits`` lets file edits work in headless runs without
+    ``--dangerously-skip-permissions``).
+    """
+
+    enabled: bool = True
+    command: str = "claude"
+    timeout: float = 600.0
+    probe_timeout: float = 90.0
+    model: str = ""
+    permission_mode: str = "acceptEdits"
+    extra_args: str = ""
+
+
+@dataclass
 class WorkflowConfig:
     autonomy: str = "hybrid"
     max_parallel_tasks: int = 1
@@ -230,6 +259,7 @@ class Config:
     omniroute: OmniRouteConfig = field(default_factory=OmniRouteConfig)
     thx: ThxConfig = field(default_factory=ThxConfig)
     arena: ArenaConfig = field(default_factory=ArenaConfig)
+    claude_code: ClaudeCodeConfig = field(default_factory=ClaudeCodeConfig)
     workflow: WorkflowConfig = field(default_factory=WorkflowConfig)
     verification: VerificationConfig = field(default_factory=VerificationConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
@@ -244,6 +274,7 @@ class Config:
             "omniroute": self.omniroute.__dict__,
             "thx": self.thx.__dict__,
             "arena": self.arena.__dict__,
+            "claude_code": self.claude_code.__dict__,
             "workflow": self.workflow.__dict__,
             "verification": self.verification.__dict__,
             "logging": self.logging.__dict__,
@@ -259,6 +290,7 @@ _SECTION_DTYPES = {
     "omniroute": OmniRouteConfig,
     "thx": ThxConfig,
     "arena": ArenaConfig,
+    "claude_code": ClaudeCodeConfig,
     "workflow": WorkflowConfig,
     "verification": VerificationConfig,
     "logging": LoggingConfig,

@@ -1,8 +1,9 @@
-# DRIFTLINE Orchestrator v1.1.4
+# DRIFTLINE Orchestrator v1.1.5
 
 A locally running, hybrid-autonomy development orchestrator for the **DRIFTLINE**
-Roblox project. Python owns the workflow. Qwen reasons. THX-02 routes. Arena
-implements. **Python policy is never overridden by an AI model.**
+Roblox project. Python owns the workflow. Qwen reasons. THX-02 routes. **Claude
+Code** (official CLI, your paid subscription) is the coding agent. Arena exposes
+tools and capabilities. **Python policy is never overridden by an AI model.**
 
 The application is a standalone, Windows-installable package. One touch does
 everything: install, test, start every needed service in the background and
@@ -48,11 +49,14 @@ driftline> quit
 ```
 
 Commands: `doctor`, `report`, `status`, `submit`, `approve`, `init`,
-`qwen-models`, `help`, `quit`. A goal is planned only; nothing is dispatched
-until you review the plan and run `submit ... --execute` with
-`workflow.dry_run: false`. `qwen-models` discovers local `.gguf` model files
-and prints paste-ready `services.qwen_start_command` lines - you choose the
-model; the tool never guesses it.
+`qwen-models`, `claude-run`, `claude-acceptance`, `help`, `quit`. A goal is
+planned only; nothing is dispatched until you review the plan and run
+`submit ... --execute` with `workflow.dry_run: false`. `qwen-models` discovers
+local `.gguf` model files and prints paste-ready `services.qwen_start_command`
+lines - you choose the model; the tool never guesses it. `claude-run <task>
+--yes` executes one real coding task via the official Claude Code CLI (your
+subscription login; output and exit status captured). `claude-acceptance` is
+the safe acceptance test in a disposable repository.
 
 ### Options
 
@@ -122,12 +126,22 @@ Arena MCP                CONNECTED / BLOCKED
 Arena tools discovered   PASS / UNVERIFIED
 Arena task capability    VERIFIED / UNVERIFIED
 
+Claude Code installed           PASS / BLOCKED
+Claude Code authenticated       PASS / FAIL / UNVERIFIED
+Claude Code execution available PASS / BLOCKED
+Qwen model available            PASS / BLOCKED
+THX-02 available                PASS / BLOCKED
+Arena bridge connected          PASS / BLOCKED
+Task execution capability       PASS / BLOCKED
+
 Git repository           PASS / BLOCKED
 Workflow                 IDLE
 ```
 
 `BLOCKED` means the service was probed with a real request and did not answer.
-A bare TCP connect is never reported as `PASS`.
+A bare TCP connect is never reported as `PASS`. Claude Code is only reported
+as execution-available after a **real** CLI invocation succeeded - the
+executable merely existing is never treated as ready.
 
 ---
 

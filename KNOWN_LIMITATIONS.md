@@ -98,7 +98,9 @@ path you provide.
 
 * No dashboard or web UI (a clear CLI and status output were prioritised).
 * No automatic merging, publishing, force-push or branch deletion.
-* No credential reading from Claude Code, GitHub or browser profiles.
+* No credential reading from Claude Code, GitHub or browser profiles. The
+  Claude Code executor invokes the official CLI, which keeps and uses its own
+  subscription login; DRIFTLINE never reads, stores or bypasses credentials.
 * No model weights, game assets or unrelated DRIFTLINE files in the ZIP.
 * No event-driven Arena notifications; configurable polling with exponential
   backoff is used instead.

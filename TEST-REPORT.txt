@@ -1,6 +1,77 @@
-DRIFTLINE ORCHESTRATOR v1.1.4 - TEST REPORT
+DRIFTLINE ORCHESTRATOR v1.1.5 - TEST REPORT
 Generated (UTC): 2026-11-17
 Interpreter: 3.11.2 (build environment; target runtime is Windows Python 3.12)
+
+CHANGE IN v1.1.5 (Claude Code integration: audit + executor + readiness)
+------------------------------------------------------------------------
+AUDIT FINDINGS (verified against the v1.1.4 source before any change):
+  1. Claude Code CLI supported anywhere? NO. The only mentions were
+     SECURITY.md / KNOWN_LIMITATIONS.md statements that credentials are never
+     read from Claude Code. No code, config key or CLI flag existed.
+  2. Executor / coding-agent adapter? NO. Only agents/arena.py (ArenaAdapter,
+     an MCP implementation-engine adapter). No local CLI executor existed.
+  3. How were implementation tasks executed? TaskManager.dispatch() ->
+     ArenaAdapter.dispatch(task) over MCP exclusively. Nothing invoked a
+     coding agent directly.
+  4. Configured Claude Code executable/command? NO.
+  5. Authentication checked? NO - and never bypassed either (SECURITY.md).
+  6. Component responsible for implementation? ArenaAdapter.dispatch via the
+     discovered MCP task tool, gated by Policy(DISPATCH_TASK) + dry_run.
+
+IMPLEMENTED (smallest correct; architecture preserved):
+  * orchestrator/agents/claude_code.py - ClaudeCodeExecutor runs REAL tasks
+    through the official CLI headlessly (claude -p ... --output-format json),
+    captures stdout/stderr/exit status/session id and the exact created and
+    modified files (before/after snapshot), writes a full log under logs/.
+    Capability levels: NOT_CONFIGURED / NOT_INSTALLED / INSTALLED_UNVERIFIED /
+    INSTALLED_NOT_AUTHENTICATED / EXECUTION_VERIFIED. The last one is only
+    ever reached after a real invocation succeeds - an executable merely
+    existing is never reported as ready. Auth is the CLI's own subscription
+    login (claude login); failures are reported, never worked around.
+    permission_mode stays non-bypassing (acceptEdits); bypass modes are
+    rejected by the adapter and --dangerously-skip-permissions is never used.
+  * Policy: claude/claude.exe enter the command allowlist;
+    validate_agent_command() scans every option for shell metacharacters and
+    treats only the final prompt element as free-form task text (argv list,
+    shell-free subprocess - no injection path).
+  * TaskManager.execute_with_claude() - state-machine-disciplined execution
+    (READY -> DISPATCH_PENDING -> RUNNING -> RESULT_RECEIVED -> VERIFYING ->
+    VERIFIED/NEEDS_REVIEW, or FAILED). workflow.dry_run is untouched and keeps
+    suppressing ALL Arena dispatch; the claude channel is explicit-command
+    only (claude-run requires --yes) and is documented as such.
+  * Readiness rows (all seven requested): Claude Code installed /
+    authenticated / execution available, Qwen model available, THX-02
+    available, Arena bridge connected, Task execution capability (which
+    executor can really run a task now + dry_run state). start.ps1 shows them
+    automatically (it runs 'orchestrator.cli doctor').
+  * Commands: claude-run <objective> --yes (one real coding task);
+    claude-acceptance (TASK-4 safe test): disposable git repository under
+    run/, one bounded prompt ("create exactly one file test_greeting.py ...
+    with a passing pytest test"), agent output + exit status captured, the
+    expected file is verified, the test is really run, PASS/FAIL is printed
+    and a task record keeps the result. Real project files are never touched.
+  * Config: new claude_code section (enabled, command, timeout, probe_timeout,
+    model, permission_mode, extra_args). Existing configs gain it
+    automatically via init --upgrade on startup.
+
+TESTS: 144/144 offline in the build environment (118 + 26 new: policy agent
+command rules, detect/probe honesty incl. auth-failure classification, output
+and exit-status capture, created/modified file diffing, bypass-mode refusal,
+TaskManager transitions, readiness honesty incl. "never PASS without a real
+probe", full acceptance loop with a stubbed agent + real pytest run).
+The REAL Claude Code invocation is deliberately NOT claimed here (build
+environment has no CLI): run the Windows acceptance test below.
+
+WINDOWS ACCEPTANCE (v1.1.5):
+  cd C:\Users\MB\DRIFTLINE
+  git pull
+  .\play.cmd -SkipModelDownload
+  (readiness now lists: Claude Code installed / authenticated / execution
+   available, Qwen model available, THX-02 available, Arena bridge connected,
+   Task execution capability)
+  driftline> claude-acceptance
+  (expect: ACCEPTANCE: PASS, agent exit 0, test_greeting.py CREATED, pytest
+   passed; artifacts under run\claude-acceptance-<ts>\)
 
 CHANGE IN v1.1.4 (field report: Ollama selection, Qwen config, Arena bridge)
 --------------------------------------------------------------------------

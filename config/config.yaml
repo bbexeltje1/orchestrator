@@ -47,6 +47,19 @@ arena:
   poll_max: 120
   backoff_base: 2.0
 
+# Official Claude Code CLI - the actual coding agent. The CLI uses YOUR
+# subscription login (run "claude login"); DRIFTLINE never reads, stores or
+# bypasses credentials. Execution happens only via the explicit
+# claude-run / claude-acceptance commands.
+claude_code:
+  enabled: true
+  command: claude         # executable name or full path
+  timeout: 600.0          # per-task run timeout (seconds)
+  probe_timeout: 90.0     # readiness probe timeout (seconds)
+  model: ""               # optional --model override; empty = your default
+  permission_mode: acceptEdits   # non-bypassing; edits work headlessly
+  extra_args: ""          # optional extra CLI args (shell-safe tokens only)
+
 workflow:
   autonomy: hybrid
   max_parallel_tasks: 1

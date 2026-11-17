@@ -8,11 +8,13 @@ import io
 import json
 import shlex
 import sys
+import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .agents.arena import ArenaAdapter
+from .agents.claude_code import ClaudeCodeExecutor
 from .app import App, bootstrap
 from .config import ConfigError, load_config
 from .engines.qwen import QwenEngine
@@ -111,10 +113,12 @@ def build_readiness(app: App, *, connect_arena: bool = True) -> ReadinessReport:
             )
 
     # Arena
+    arena_cap = None
     if not cfg.arena.enabled:
         report.add("Arena MCP", ServiceHealth.NOT_CONFIGURED, "disabled")
     elif connect_arena:
         cap = app.arena.connect()
+        arena_cap = cap
         report.add("Arena MCP", ServiceHealth.PASS if cap.connected else ServiceHealth.BLOCKED, cap.level)
         report.details["Arena capability"] = cap.to_dict()
         if cap.connected:
@@ -140,6 +144,105 @@ def build_readiness(app: App, *, connect_arena: bool = True) -> ReadinessReport:
         report.details["Arena REST bridge"] = rest
     else:
         report.add("Arena MCP", ServiceHealth.SKIPPED, "not probed")
+
+    # Claude Code (official CLI; subscription login lives in the CLI itself -
+    # never read, never bypassed). EXECUTION_VERIFIED requires a real probe call.
+    claude_cap = None
+    if not cfg.claude_code.enabled:
+        report.add("Claude Code installed", ServiceHealth.NOT_CONFIGURED, "claude_code disabled in config")
+        report.add("Claude Code authenticated", ServiceHealth.NOT_CONFIGURED, "claude_code disabled in config")
+        report.add("Claude Code execution available", ServiceHealth.NOT_CONFIGURED, "claude_code disabled in config")
+    else:
+        executor = ClaudeCodeExecutor(cfg.claude_code, base_dir=app.base_dir)
+        claude_cap = executor.probe() if connect_arena else executor.detect()
+        report.add(
+            "Claude Code installed",
+            ServiceHealth.PASS if claude_cap.installed else ServiceHealth.BLOCKED,
+            f"{claude_cap.executable} ({claude_cap.version})" if claude_cap.installed else claude_cap.probe_detail,
+        )
+        if not connect_arena:
+            report.add("Claude Code authenticated", ServiceHealth.SKIPPED, "not probed (offline)")
+            report.add("Claude Code execution available", ServiceHealth.SKIPPED, "not probed (offline)")
+        elif claude_cap.execution_verified is True:
+            report.add("Claude Code authenticated", ServiceHealth.PASS, "subscription login via claude CLI")
+            report.add("Claude Code execution available", ServiceHealth.PASS, "real probe invocation succeeded")
+        else:
+            if claude_cap.authenticated is False:
+                report.add("Claude Code authenticated", ServiceHealth.FAIL, claude_cap.probe_detail)
+            elif claude_cap.installed:
+                report.add("Claude Code authenticated", ServiceHealth.UNVERIFIED, claude_cap.probe_detail)
+            else:
+                report.add("Claude Code authenticated", ServiceHealth.BLOCKED, "CLI not installed")
+            report.add(
+                "Claude Code execution available",
+                ServiceHealth.BLOCKED if claude_cap.installed else ServiceHealth.BLOCKED,
+                claude_cap.probe_detail or "CLI not installed",
+            )
+
+    # Qwen model available (a real model, not just an open port)
+    if not cfg.qwen.enabled:
+        report.add("Qwen model available", ServiceHealth.NOT_CONFIGURED, "qwen disabled")
+    elif app.workflow.qwen is not None:
+        q_health, q_detail, q_disc = app.workflow.qwen.health()
+        if q_health is ServiceHealth.PASS:
+            report.add("Qwen model available", ServiceHealth.PASS, f"model={q_disc.get('model')}")
+        elif q_health is ServiceHealth.UNVERIFIED:
+            report.add("Qwen model available", ServiceHealth.BLOCKED, "qwen reachable but no model loaded")
+        else:
+            report.add("Qwen model available", q_health, q_detail)
+    else:
+        report.add("Qwen model available", ServiceHealth.SKIPPED, "engine unavailable")
+
+    # THX-02 available (Ollama reachable AND the configured model present)
+    if not cfg.thx.enabled:
+        report.add("THX-02 available", ServiceHealth.NOT_CONFIGURED, "thx disabled")
+    elif app.workflow.thx is not None:
+        res = app.workflow.thx.health()
+        report.add(
+            "THX-02 available",
+            ServiceHealth.PASS if res.health is ServiceHealth.PASS else res.health,
+            res.detail,
+        )
+    else:
+        report.add("THX-02 available", ServiceHealth.SKIPPED, "engine unavailable")
+
+    # Arena bridge connected (the bridge at the configured endpoint)
+    if not cfg.arena.enabled:
+        report.add("Arena bridge connected", ServiceHealth.NOT_CONFIGURED, "arena disabled")
+    elif arena_cap is not None:
+        report.add(
+            "Arena bridge connected",
+            ServiceHealth.PASS if arena_cap.connected else ServiceHealth.BLOCKED,
+            f"MCP {arena_cap.level}",
+        )
+    else:
+        report.add("Arena bridge connected", ServiceHealth.SKIPPED, "not probed (offline)")
+
+    # Actual task execution capability: which executor can really run a task now.
+    executors: List[str] = []
+    if claude_cap is not None and claude_cap.execution_verified is True:
+        executors.append("claude_code")
+    if arena_cap is not None and arena_cap.connected and arena_cap.can_dispatch:
+        executors.append("arena")
+    dry_state = "on" if cfg.workflow.dry_run else "off"
+    dry_note = (
+        f"workflow.dry_run={dry_state} (dry_run suppresses all Arena dispatch; "
+        "Claude Code runs only via the explicit claude-run/claude-acceptance commands)"
+    )
+    if executors:
+        report.add(
+            "Task execution capability",
+            ServiceHealth.PASS,
+            f"executors: {', '.join(executors)}; {dry_note}",
+        )
+    elif not connect_arena:
+        report.add("Task execution capability", ServiceHealth.SKIPPED, "not fully probed (offline); run doctor")
+    else:
+        report.add(
+            "Task execution capability",
+            ServiceHealth.BLOCKED,
+            f"no verified executor (claude_code not execution-verified, arena not dispatch-capable); {dry_note}",
+        )
 
     # Git
     try:
@@ -272,6 +375,8 @@ CONSOLE_COMMANDS = {
     "approve",
     "init",
     "qwen-models",
+    "claude-run",
+    "claude-acceptance",
 }
 
 CONSOLE_HELP = """\
@@ -288,6 +393,8 @@ Commands:
   qwen-models [--json] [--root DIR]
                                 discover local .gguf models and print
                                 paste-ready services.qwen_start_command lines
+  claude-run <objective> --yes  run one real coding task via the Claude Code CLI
+  claude-acceptance             safe acceptance test in a disposable repository
   help                          show this help
   quit                          leave the console (Ctrl+D also works)"""
 
@@ -401,6 +508,155 @@ def cmd_qwen_models(args: argparse.Namespace) -> int:
     return 0
 
 
+ACCEPTANCE_OBJECTIVE = (
+    "Create exactly one file named test_greeting.py in the current directory. "
+    "It must define a function greet(name) that returns exactly 'Hello, <name>!' "
+    "and include a pytest test named test_greet that asserts "
+    "greet('World') == 'Hello, World!'. "
+    "Do not create or modify any other files."
+)
+
+
+def _print_claude_outcome(outcome) -> None:
+    print(f"task:   {outcome.task_id}")
+    print(f"status: {outcome.status}")
+    print(f"detail: {outcome.detail}")
+    raw = outcome.raw or {}
+    if raw:
+        print(f"exit:   {raw.get('returncode')}  session: {raw.get('session_id') or '-'}  turns: {raw.get('num_turns') or '-'}")
+        print(f"created:  {raw.get('created_files')}")
+        print(f"modified: {raw.get('modified_files')}")
+        if raw.get("log_path"):
+            print(f"log:    {raw['log_path']} (full agent output)")
+        tail = (raw.get("result_text_tail") or "").strip()
+        if tail:
+            print("agent result (tail):")
+            for line in tail.splitlines()[-12:]:
+                print(f"  {line}")
+
+
+def cmd_claude_run(args: argparse.Namespace) -> int:
+    """Submit a real coding task to the official Claude Code CLI."""
+    objective = " ".join(args.objective).strip()
+    if not objective:
+        print("objective must not be empty")
+        return 1
+    app = bootstrap(base_dir=args.base_dir)
+    try:
+        cfg = app.config.claude_code
+        if not cfg.enabled:
+            print("claude_code is disabled in config/config.yaml")
+            return 1
+        executor = ClaudeCodeExecutor(cfg, base_dir=app.base_dir)
+        cap = executor.detect()
+        if not cap.installed:
+            print(f"BLOCKED: {cap.probe_detail}")
+            return 1
+        workdir = (
+            Path(args.workdir)
+            if args.workdir
+            else Path(app.base_dir) / "run" / f"claude-task-{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}"
+        )
+        if not args.yes:
+            print("claude-run is a real Claude Code CLI invocation (your subscription).")
+            print(f"  workdir:   {workdir}")
+            print(f"  objective: {objective}")
+            print("Nothing has run yet. Re-run with --yes to execute.")
+            return 0
+        task, _ = app.tasks.create_task(
+            project=app.config.project.name,
+            branch="feature/claude-local",
+            objective=objective,
+            metadata={"executor": "claude_code", "workdir": str(workdir), "kind": "claude-run"},
+        )
+        outcome = app.tasks.execute_with_claude(
+            task.id,
+            executor=executor,
+            workdir=workdir,
+            timeout=args.timeout or cfg.timeout,
+        )
+        _print_claude_outcome(outcome)
+        return 0 if outcome.status in {"NEEDS_REVIEW", "VERIFIED"} else 1
+    finally:
+        app.close()
+
+
+def cmd_claude_acceptance(args: argparse.Namespace) -> int:
+    """TASK-4 acceptance: one real coding task in a disposable repository."""
+    from .verification.tests import TestRunner
+
+    app = bootstrap(base_dir=args.base_dir)
+    try:
+        cfg = app.config.claude_code
+        if not cfg.enabled:
+            print("claude_code is disabled in config/config.yaml")
+            return 1
+        stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+        workdir = (
+            Path(args.workdir)
+            if args.workdir
+            else Path(app.base_dir) / "run" / f"claude-acceptance-{stamp}"
+        )
+        workdir.mkdir(parents=True, exist_ok=True)
+        print(f"disposable test repository: {workdir}")
+        runner = TestRunner(workdir, policy=app.policy)
+        init_run = runner.run("git-init", ["git", "init"])
+        if init_run.passed:
+            print("  git repository initialised (disposable)")
+        else:
+            print(f"  (git init skipped: {init_run.blocked_reason or 'exit ' + str(init_run.returncode)})")
+
+        executor = ClaudeCodeExecutor(cfg, base_dir=app.base_dir)
+        cap = executor.detect()
+        if not cap.installed:
+            print(f"BLOCKED: {cap.probe_detail}")
+            return 2
+
+        task, _ = app.tasks.create_task(
+            project=app.config.project.name,
+            branch="feature/claude-local",
+            objective=ACCEPTANCE_OBJECTIVE,
+            acceptance_criteria=[
+                "test_greeting.py created by the agent",
+                "pytest test_greet passes",
+            ],
+            metadata={"executor": "claude_code", "workdir": str(workdir), "kind": "claude-acceptance"},
+        )
+        expected = workdir / "test_greeting.py"
+
+        def verify(result) -> tuple[bool, str]:
+            if not expected.exists():
+                return False, "expected file test_greeting.py was NOT created"
+            parts = ["file test_greeting.py created"]
+            test_run = runner.run(
+                "pytest-test-greeting",
+                [sys.executable, "-m", "pytest", "test_greeting.py", "-q"],
+                timeout=120.0,
+            )
+            parts.append(f"pytest exit={test_run.returncode}")
+            if not test_run.passed:
+                tail = (test_run.stdout + test_run.stderr)[-400:].replace("\n", " ")
+                return False, "; ".join(parts) + f"; test FAILED: {tail}"
+            parts.append("test passed")
+            return True, "; ".join(parts)
+
+        outcome = app.tasks.execute_with_claude(
+            task.id,
+            executor=executor,
+            workdir=workdir,
+            verify_fn=verify,
+            timeout=args.timeout or cfg.timeout,
+        )
+        _print_claude_outcome(outcome)
+        print(f"expected file: {'CREATED' if expected.exists() else 'MISSING'} ({expected})")
+        ok = outcome.status == "VERIFIED"
+        print("ACCEPTANCE: PASS" if ok else "ACCEPTANCE: FAIL")
+        print(f"artifacts kept in: {workdir} (disposable; under run/, never in your project files)")
+        return 0 if ok else 1
+    finally:
+        app.close()
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     from .config import DEFAULT_CONFIG, config_path_for, upgrade_config_file
     import yaml
@@ -469,6 +725,20 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="extra directory to search (repeatable; replaces the default roots)",
     )
+    p_cr = sub.add_parser(
+        "claude-run",
+        help="run one real coding task through the official Claude Code CLI",
+    )
+    p_cr.add_argument("objective", nargs="+", help="the coding task for Claude Code")
+    p_cr.add_argument("--workdir", default="", help="directory to work in (default: run/claude-task-<ts>)")
+    p_cr.add_argument("--timeout", type=float, default=0.0, help="run timeout in seconds (default: config)")
+    p_cr.add_argument("--yes", action="store_true", help="actually execute (without this, only the plan is shown)")
+    p_ca = sub.add_parser(
+        "claude-acceptance",
+        help="safe acceptance test: one coding task in a disposable repository",
+    )
+    p_ca.add_argument("--workdir", default="", help="disposable directory (default: run/claude-acceptance-<ts>)")
+    p_ca.add_argument("--timeout", type=float, default=0.0, help="run timeout in seconds (default: config)")
     return parser
 
 
@@ -485,6 +755,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         "approve": cmd_approve,
         "init": cmd_init,
         "qwen-models": cmd_qwen_models,
+        "claude-run": cmd_claude_run,
+        "claude-acceptance": cmd_claude_acceptance,
     }
     return handlers[args.command](args)
 

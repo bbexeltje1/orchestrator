@@ -77,6 +77,28 @@ completion both succeed. Otherwise traffic stays direct.
 The real tool names and schemas are discovered at runtime. See
 `KNOWN_LIMITATIONS.md` for the current Arena status.
 
+## claude_code
+
+The actual coding agent: the **official Claude Code CLI**, run headlessly with
+**your own subscription login** (`claude login`). DRIFTLINE never reads, stores
+or substitutes credentials, and never uses `--dangerously-skip-permissions`.
+
+| Key | Default | Notes |
+|---|---|---|
+| `enabled` | `true` | `false` = the executor and its readiness rows report NOT_CONFIGURED |
+| `command` | `claude` | executable name or full path |
+| `timeout` | `600.0` | per-task run timeout in seconds |
+| `probe_timeout` | `90.0` | readiness probe timeout in seconds |
+| `model` | `\\\"\\\"` | optional `--model` override; empty = your CLI default |
+| `permission_mode` | `acceptEdits` | non-bypassing mode so edits work headlessly |
+| `extra_args` | `\\\"\\\"` | extra CLI args (shell-safe tokens only) |
+
+Execution happens only through explicit commands: `claude-run <objective> --yes`
+(free-form task; `--yes` is required) and `claude-acceptance` (bounded test in a
+disposable repository under `run\`). Both record a real task, capture the
+agent's output and exit status, and never touch files outside the chosen
+working directory.
+
 ## workflow
 
 | Key | Default | Notes |

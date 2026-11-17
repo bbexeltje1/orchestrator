@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import concurrent.futures
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from .agents.arena import ArenaAdapter
@@ -155,6 +156,155 @@ class TaskManager:
             task.id, status=TaskStatus.BLOCKED.value, message=f"denied: {operation.value}"
         )
         return False, decision.reason
+
+    # -- local coding-agent execution (Claude Code) ------------------------
+
+    def execute_with_claude(
+        self,
+        task_id: str,
+        *,
+        executor: Any,
+        workdir: str | Path,
+        verify_fn: Optional[Callable[[Any], tuple[bool, str]]] = None,
+        timeout: Optional[float] = None,
+    ) -> DispatchOutcome:
+        """Execute a task with the Claude Code CLI in ``workdir``.
+
+        This is an *explicit, human-initiated* local execution channel (the
+        ``claude-run`` / ``claude-acceptance`` commands). It is intentionally
+        separate from ``dispatch()``: ``workflow.dry_run`` keeps blocking all
+        Arena contact exactly as before and is never consulted here - the
+        explicit command is the consent. All transitions still go through the
+        state machine and the policy gate. A local timeout is deterministic
+        (the process is killed), so it becomes FAILED, never DISPATCH_UNKNOWN.
+        """
+        task = self.db.get_task(task_id)
+        if task is None:
+            raise TaskManagerError(f"unknown task {task_id}")
+        if not is_dispatchable(task.status):
+            return DispatchOutcome(
+                task_id=task.id,
+                status=task.status,
+                dispatched=False,
+                detail=f"task is {task.status}; execution is not permitted from this state",
+            )
+        allowed, gate = self._policy_gate(task, Operation.DISPATCH_TASK)
+        if not allowed:
+            return DispatchOutcome(
+                task_id=task.id,
+                status=self.db.get_task(task_id).status,
+                dispatched=False,
+                detail=f"policy gate: {gate}",
+            )
+
+        try:
+            require_transition(task.status, TaskStatus.DISPATCH_PENDING)
+        except StateMachineError as exc:
+            return DispatchOutcome(
+                task_id=task.id, status=task.status, dispatched=False, detail=str(exc)
+            )
+        self.db.update_task(
+            task.id,
+            status=TaskStatus.DISPATCH_PENDING.value,
+            dispatch_at=utcnow_iso(),
+            message="executing with Claude Code CLI",
+        )
+        self.db.update_task(
+            task.id, status=TaskStatus.RUNNING.value, message="claude_code running"
+        )
+        try:
+            result = executor.run_task(task.objective, workdir, timeout=timeout)
+        except Exception as exc:  # noqa: BLE001 - executor bugs must not corrupt state
+            self.db.update_task(
+                task.id,
+                status=TaskStatus.FAILED.value,
+                error=redact(f"{type(exc).__name__}: {exc}"),
+                message="claude_code executor raised",
+            )
+            return DispatchOutcome(
+                task_id=task.id,
+                status=TaskStatus.FAILED.value,
+                dispatched=False,
+                detail=f"executor error: {type(exc).__name__}: {redact(exc)}",
+            )
+
+        changed = list(result.created_files) + list(result.modified_files)
+        detail = (
+            f"claude_code exit={result.returncode} created={result.created_files} "
+            f"modified={result.modified_files}"
+        )
+        if not result.ok:
+            self.db.update_task(
+                task.id,
+                status=TaskStatus.FAILED.value,
+                error=redact(result.blocked_reason or result.result_text[:300] or "run failed"),
+                message=detail,
+                changed_files=changed,
+                final_result=redact(result.result_text[:4000]),
+            )
+            return DispatchOutcome(
+                task_id=task.id,
+                status=TaskStatus.FAILED.value,
+                dispatched=False,
+                detail=detail,
+                raw=result.to_dict(),
+            )
+
+        self.db.update_task(
+            task.id,
+            status=TaskStatus.RESULT_RECEIVED.value,
+            message=detail,
+            changed_files=changed,
+            final_result=redact(result.result_text[:4000]),
+        )
+        if verify_fn is None:
+            self.db.update_task(
+                task.id,
+                status=TaskStatus.NEEDS_REVIEW.value,
+                message="agent run finished; human review required",
+            )
+            return DispatchOutcome(
+                task_id=task.id,
+                status=TaskStatus.NEEDS_REVIEW.value,
+                dispatched=True,
+                detail=detail + " (NEEDS_REVIEW)",
+                raw=result.to_dict(),
+            )
+
+        self.db.update_task(
+            task.id, status=TaskStatus.VERIFYING.value, message="running verification"
+        )
+        try:
+            verified, verify_detail = verify_fn(result)
+        except Exception as exc:  # noqa: BLE001
+            verified, verify_detail = False, f"verification raised {type(exc).__name__}: {redact(exc)}"
+        if verified:
+            self.db.update_task(
+                task.id,
+                status=TaskStatus.VERIFIED.value,
+                message=f"verified: {verify_detail}",
+                verification={"passed": True, "detail": verify_detail},
+            )
+            return DispatchOutcome(
+                task_id=task.id,
+                status=TaskStatus.VERIFIED.value,
+                dispatched=True,
+                detail=f"{detail}; VERIFIED: {verify_detail}",
+                raw=result.to_dict(),
+            )
+        self.db.update_task(
+            task.id,
+            status=TaskStatus.NEEDS_REVIEW.value,
+            message=f"verification failed: {verify_detail}",
+            verification={"passed": False, "detail": verify_detail},
+        )
+        return DispatchOutcome(
+            task_id=task.id,
+            status=TaskStatus.NEEDS_REVIEW.value,
+            dispatched=True,
+            detail=f"{detail}; verification failed: {verify_detail}",
+            raw=result.to_dict(),
+        )
 
     # -- dispatch --------------------------------------------------------
 

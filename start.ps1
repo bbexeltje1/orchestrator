@@ -37,7 +37,7 @@ try {
 }
 catch { }
 
-$Script:AppVersion = '1.1.4'
+$Script:AppVersion = '1.1.5'
 $Script:Root = $PSScriptRoot
 if (-not $Script:Root) { $Script:Root = (Get-Location).Path }
 Set-Location -Path $Script:Root

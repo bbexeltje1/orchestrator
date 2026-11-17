@@ -90,6 +90,8 @@ ALLOWED_COMMAND_PATTERNS: List[re.Pattern] = [
     re.compile(r"^selene\b"),
     re.compile(r"^ollama\b"),
     re.compile(r"^ollama.exe\b"),
+    re.compile(r"^claude\b"),
+    re.compile(r"^claude.exe\b"),
 ]
 
 # Git subcommands that are never allowed to be run by the orchestrator.
@@ -222,6 +224,7 @@ class Policy:
         allowed_names = {
             "git", "python", "python3", "pytest", "rojo", "rojo.exe",
             "luau-analyze", "selene", "ollama", "ollama.exe",
+            "claude", "claude.exe",
         }
         if base not in allowed_names:
             return False, f"executable {base!r} is not in the command allowlist"
@@ -238,6 +241,32 @@ class Policy:
                 return False, "git checkout is only permitted for branch creation (-b)"
             if sub in GIT_DENIED_SUBCOMMANDS:
                 return False, f"git {sub} is not permitted"
+        return True, ""
+
+    @staticmethod
+    def validate_agent_command(
+        argv: Sequence[str], *, prompt_at: int = -1
+    ) -> tuple[bool, str]:
+        """Validate a coding-agent CLI invocation (argv list, never a shell).
+
+        The executable must be the approved Claude Code CLI. Every option and
+        value is scanned for shell metacharacters; only the designated prompt
+        position (default: the last element) is free-form task text, passed as
+        a single argv element to a shell-free subprocess, so it cannot chain
+        or inject commands. This is validation, not credential handling - the
+        CLI authenticates with its own login.
+        """
+        if not argv or not isinstance(argv, (list, tuple)):
+            return False, "empty command"
+        exe = str(argv[0])
+        base = exe.replace("\\", "/").rsplit("/", 1)[-1].lower()
+        if base not in {"claude", "claude.exe"}:
+            return False, f"executable {base!r} is not an approved coding-agent CLI"
+        for idx, token in enumerate(argv[1:], start=1):
+            if idx == prompt_at or (prompt_at == -1 and idx == len(argv) - 1):
+                continue  # task text (single argv element; subprocess has no shell)
+            if _UNSAFE_SHELL.search(str(token)):
+                return False, f"unsafe shell metacharacter in argument {token!r}"
         return True, ""
 
     # -- repository path / branch safety -----------------------------------
