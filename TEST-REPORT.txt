@@ -1,6 +1,70 @@
-DRIFTLINE ORCHESTRATOR v1.1.3 - TEST REPORT
+DRIFTLINE ORCHESTRATOR v1.1.4 - TEST REPORT
 Generated (UTC): 2026-11-17
 Interpreter: 3.11.2 (build environment; target runtime is Windows Python 3.12)
+
+CHANGE IN v1.1.4 (field report: Ollama selection, Qwen config, Arena bridge)
+--------------------------------------------------------------------------
+Three reported problems, all diagnosed at source level (this build
+environment is Linux - nothing below is claimed as executed on Windows):
+
+1. OLLAMA - "Ollama signature status: UnknownError - refusing to use it."
+
+   Root cause: NOT a broken signature check. Get-OllamaPath returned the
+   FIRST "Get-Command ollama" hit. On the reporting machine PATH resolved
+   "C:\Windows\System32\ollama" (a stub/shim, not the real installation)
+   BEFORE the genuine install at
+   "C:\Users\MB\AppData\Local\Programs\Ollama\ollama.exe". The signature
+   check ran on the shim: Get-AuthenticodeSignature reports UnknownError
+   with NO signer certificate for a non-PE stub, so "no signer -> refuse"
+   fired - correctly, for that file. The real signed exe was never examined.
+
+   Fixed (detection itself; verification is never bypassed):
+   - Get-OllamaCandidates: every plausible ollama.exe - known install
+     locations FIRST (preferred), then ALL PATH hits (Get-Command -All),
+     deduplicated. A stray shim earlier in PATH can no longer shadow the
+     real installation.
+   - Select-OllamaExecutable: every candidate is reported (path, size,
+     signature status, signer) and the FIRST candidate that passes
+     signature verification is used. Unverifiable files are skipped and
+     never executed.
+   - Test-IsWindowsExecutable (MZ header probe): shims/stubs/empty files
+     are refused up front with a clear message.
+   - Test-OllamaSignature rules unchanged in strength: downloaded installers
+     require a fully Valid Ollama-signed signature; pre-installed binaries
+     need a signer certificate matching Ollama (chain/revocation hiccups
+     tolerated with a visible warning); HashMismatch / unsigned / non-Ollama
+     signers are always refused.
+
+2. QWEN - llama-server.exe detected but no way to configure a command
+   without knowing the model path.
+
+   Fixed with discovery, never guessing (orchestrator/model_discovery.py):
+   - New console command "qwen-models": lists candidate .gguf files from
+     sensible locations only (~/models, ~/Models, ~/Downloads, ~/Desktop,
+     the llama-server folder; --root DIR for elsewhere) with size and date,
+     and prints paste-ready services.qwen_start_command lines. The user
+     chooses exactly one line; nothing is selected automatically, modified
+     or started.
+   - start.ps1 now backs its hint with the same discovery: when llama-server
+     is found it prints the exact paste-ready line(s) for real .gguf files
+     on the machine.
+
+3. ARENA BRIDGE - "connection refused on 127.0.0.1:17864/mcp".
+
+   Diagnosis: the bridge is part of the user's own Arena tooling, external
+   to DRIFTLINE. There is no authoritative startup command in this codebase
+   or in public sources for a bridge on port 17864 - and none is invented.
+   The launcher already supports starting it as a hidden background process
+   (run\<name>.json tracking, log capture, ownership-checked stop.ps1) once
+   the REAL command is configured in services.arena_start_command.
+   TROUBLESHOOTING.md "Arena bridge" documents the exact capture procedure
+   (netstat -> PID -> CIM CommandLine of the running bridge) so the
+   configured command is always the user's real one.
+
+Tests: 125/125 offline in the build environment (118 + 7 new discovery/CLI).
+Structural checks: balanced braces/parens in start.ps1/stop.ps1, no stale
+Get-OllamaPath call sites, qwen-models JSON round-trip verified.
+Not claimed: Windows execution - confirm with the acceptance run below.
 
 CHANGE IN v1.1.3 (Windows test failure root cause)
 --------------------------------------------------

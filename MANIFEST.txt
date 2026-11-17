@@ -25,6 +25,7 @@ orchestrator/logutil.py
 orchestrator/main.py
 orchestrator/mcp/__init__.py
 orchestrator/mcp/client.py
+orchestrator/model_discovery.py
 orchestrator/models.py
 orchestrator/policy.py
 orchestrator/state_machine.py
@@ -55,6 +56,7 @@ tests/test_cli.py
 tests/test_config.py
 tests/test_database.py
 tests/test_dispatch_safety.py
+tests/test_model_discovery.py
 tests/test_packaging.py
 tests/test_policy.py
 tests/test_qwen.py

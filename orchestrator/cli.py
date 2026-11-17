@@ -271,6 +271,7 @@ CONSOLE_COMMANDS = {
     "submit",
     "approve",
     "init",
+    "qwen-models",
 }
 
 CONSOLE_HELP = """\
@@ -284,6 +285,9 @@ Commands:
   approve <approval-id> [--deny]
                                 resolve a pending approval
   init [--force]                write config/config.yaml from defaults
+  qwen-models [--json] [--root DIR]
+                                discover local .gguf models and print
+                                paste-ready services.qwen_start_command lines
   help                          show this help
   quit                          leave the console (Ctrl+D also works)"""
 
@@ -364,6 +368,39 @@ def cmd_approve(args: argparse.Namespace) -> int:
         app.close()
 
 
+def cmd_qwen_models(args: argparse.Namespace) -> int:
+    """Discover local .gguf models; print paste-ready Qwen start commands.
+
+    Discovery only - a model is never chosen automatically. The user picks
+    exactly one line and puts it in services.qwen_start_command.
+    """
+    from pathlib import Path as _Path
+
+    from .model_discovery import discover_gguf_models, find_llama_server
+
+    server = getattr(args, "server", "") or find_llama_server() or ""
+    roots = [_Path(r) for r in (getattr(args, "root", None) or [])] or None
+    models = discover_gguf_models(roots)
+    if getattr(args, "json", False):
+        print(json.dumps({"llama_server": server, "models": models}))
+        return 0
+    print(f"llama-server: {server or 'NOT FOUND on PATH'}")
+    if not models:
+        print("No .gguf models found in the default locations")
+        print("  (~/models, ~/Models, ~/Downloads, ~/Desktop, llama-server folder).")
+        print("Search elsewhere with: qwen-models --root <directory>")
+        print("Or edit config/config.yaml directly once you know your model path.")
+        return 0
+    print("Candidate models (newest first):")
+    for i, model in enumerate(models, 1):
+        print(f"  [{i}] {model['path']}  ({model['size']})")
+    if server:
+        print("\nPaste-ready services.qwen_start_command lines (choose exactly one):")
+        for model in models:
+            print(f'  "{server}" -m "{model["path"]}" --port 8090')
+    return 0
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     from .config import DEFAULT_CONFIG, config_path_for, upgrade_config_file
     import yaml
@@ -420,6 +457,18 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="add sections missing from an existing config; existing values are never touched",
     )
+    p_qm = sub.add_parser(
+        "qwen-models",
+        help="discover local .gguf models and print paste-ready Qwen start commands",
+    )
+    p_qm.add_argument("--json", action="store_true", help="machine-readable output")
+    p_qm.add_argument("--server", default="", help="llama-server path (default: search PATH)")
+    p_qm.add_argument(
+        "--root",
+        action="append",
+        default=[],
+        help="extra directory to search (repeatable; replaces the default roots)",
+    )
     return parser
 
 
@@ -435,6 +484,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "console": cmd_console,
         "approve": cmd_approve,
         "init": cmd_init,
+        "qwen-models": cmd_qwen_models,
     }
     return handlers[args.command](args)
 

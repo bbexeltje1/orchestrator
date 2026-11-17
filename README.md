@@ -1,4 +1,4 @@
-# DRIFTLINE Orchestrator v1.1.3
+# DRIFTLINE Orchestrator v1.1.4
 
 A locally running, hybrid-autonomy development orchestrator for the **DRIFTLINE**
 Roblox project. Python owns the workflow. Qwen reasons. THX-02 routes. Arena
@@ -47,9 +47,12 @@ driftline> status
 driftline> quit
 ```
 
-Commands: `doctor`, `report`, `status`, `submit`, `approve`, `init`, `help`,
-`quit`. A goal is planned only; nothing is dispatched until you review the
-plan and run `submit ... --execute` with `workflow.dry_run: false`.
+Commands: `doctor`, `report`, `status`, `submit`, `approve`, `init`,
+`qwen-models`, `help`, `quit`. A goal is planned only; nothing is dispatched
+until you review the plan and run `submit ... --execute` with
+`workflow.dry_run: false`. `qwen-models` discovers local `.gguf` model files
+and prints paste-ready `services.qwen_start_command` lines - you choose the
+model; the tool never guesses it.
 
 ### Options
 
@@ -178,6 +181,6 @@ See `ARCHITECTURE.md` for the module-by-module design and
 
 ## Deliverable
 
-`release/DRIFTLINE-Orchestrator-v1.1.3.zip` plus `release/SHA256SUMS.txt`,
+`release/DRIFTLINE-Orchestrator-v1.1.4.zip` plus `release/SHA256SUMS.txt`,
 `release/MANIFEST.txt` and `release/TEST-REPORT.txt`. See
 `packaging/build_zip.py` for the exact exclusion rules.

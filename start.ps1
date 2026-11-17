@@ -37,7 +37,7 @@ try {
 }
 catch { }
 
-$Script:AppVersion = '1.1.3'
+$Script:AppVersion = '1.1.4'
 $Script:Root = $PSScriptRoot
 if (-not $Script:Root) { $Script:Root = (Get-Location).Path }
 Set-Location -Path $Script:Root
@@ -51,6 +51,7 @@ $Script:LogDir = Join-Path $Script:Root 'logs'
 $Script:Report = [ordered]@{}
 $Script:Errors = New-Object System.Collections.ArrayList
 $Script:ServicesConfig = $null
+$Script:OllamaExe = $null
 
 # Service endpoints (probed with a real request, never a bare TCP connect).
 $Script:OllamaApiUrl = 'http://127.0.0.1:11434/api/version'
@@ -235,41 +236,84 @@ function Test-Git {
 # Ollama / THX-02
 # ---------------------------------------------------------------------------
 
-function Get-OllamaPath {
-    $cmd = Get-Command ollama -ErrorAction SilentlyContinue
-    if ($cmd) { return $cmd.Source }
+function Test-IsWindowsExecutable($Path) {
+    # MZ header probe: distinguishes real PE executables from shims, text
+    # stubs or 0-byte files. Classification only - nothing is executed.
+    try {
+        $stream = [System.IO.File]::OpenRead($Path)
+        try {
+            $b0 = $stream.ReadByte()
+            $b1 = $stream.ReadByte()
+            return ($b0 -eq 0x4D -and $b1 -eq 0x5A)  # 'MZ'
+        }
+        finally { $stream.Close() }
+    }
+    catch { return $false }
+}
+
+function Get-OllamaCandidates {
+    # Every plausible ollama.exe on this machine: known install locations
+    # first (preferred), then every PATH hit. Deduplicated. Nothing here is
+    # executed; the winner is chosen by signature verification only.
+    $seen = @{}
+    $candidates = @()
     foreach ($path in @(
             (Join-Path $env:LOCALAPPDATA 'Programs\Ollama\ollama.exe'),
             'C:\Program Files\Ollama\ollama.exe')) {
-        if (Test-Path $path) { return $path }
+        if ($path -and (Test-Path $path)) {
+            $key = $path.ToLower()
+            if (-not $seen.ContainsKey($key)) {
+                $seen[$key] = $true
+                $candidates += , (Get-Item $path)
+            }
+        }
     }
-    return $null
+    foreach ($cmd in @(Get-Command ollama -All -ErrorAction SilentlyContinue)) {
+        $source = $cmd.Source
+        if ($source -and (Test-Path $source)) {
+            $key = $source.ToLower()
+            if (-not $seen.ContainsKey($key)) {
+                $seen[$key] = $true
+                $candidates += , (Get-Item $source)
+            }
+        }
+    }
+    return $candidates
 }
 
 function Test-OllamaSignature {
+    # Signature verdict for one file.
+    #   -RequireValid (downloaded installers): only a fully Valid signature
+    #     from Ollama is accepted; nothing else is ever executed.
+    #   Default (already-installed binaries): real machines can report
+    #   UnknownError/NotTrusted when the chain/revocation check cannot
+    #   complete even for a genuine install, so a file whose signer
+    #   certificate matches Ollama is accepted with a visible warning.
+    #   HashMismatch, unsigned, non-executable and non-Ollama signers are
+    #   always refused. Signature verification is never bypassed.
     param(
         [string]$Path,
         [switch]$RequireValid
     )
     if (-not $Path) { return $false }
+    if (-not (Test-IsWindowsExecutable $Path)) {
+        Write-Host '  Not a Windows executable (shim, stub or empty file) - refusing to use it.' -ForegroundColor Yellow
+        return $false
+    }
     $signature = Get-AuthenticodeSignature -FilePath $Path
     $signer = ''
     if ($signature.SignerCertificate) { $signer = $signature.SignerCertificate.Subject }
     if ($signature.Status -eq 'Valid' -and $signer -match 'Ollama') { return $true }
     if ($RequireValid) {
-        Write-Host "  Signature status: $($signature.Status) / signer: $signer" -ForegroundColor Yellow
+        Write-Host "  Signature status: $($signature.Status) / signer: $signer - downloaded files must verify fully; refusing to run it." -ForegroundColor Yellow
         return $false
     }
-    # Already-installed binary: chain/revocation checks can fail on real
-    # machines (offline CRL, proxy, security software) and report
-    # UnknownError/NotTrusted for a genuine Ollama install. Only refuse on
-    # evidence of tampering or no signature at all.
     if ($signature.Status -eq 'HashMismatch') {
         Write-Host '  Ollama signature status: HashMismatch (file modified after signing) - refusing to use it.' -ForegroundColor Yellow
         return $false
     }
     if ($signature.Status -eq 'NotSigned' -or -not $signer) {
-        Write-Host "  Ollama signature status: $($signature.Status) - refusing to use it." -ForegroundColor Yellow
+        Write-Host "  Ollama signature status: $($signature.Status) with no readable signer certificate - refusing to use it." -ForegroundColor Yellow
         return $false
     }
     if ($signer -match 'Ollama') {
@@ -280,6 +324,27 @@ function Test-OllamaSignature {
     }
     Write-Host "  Ollama signer does not match Ollama ($signer) - refusing to use it." -ForegroundColor Yellow
     return $false
+}
+
+function Select-OllamaExecutable {
+    # Pick the first candidate that passes signature verification. Every
+    # candidate is reported (path, size, signature status, signer), and
+    # unverifiable files are skipped and NEVER executed - so a stray "ollama"
+    # shim earlier in PATH can never shadow the real signed installation.
+    $candidates = @(Get-OllamaCandidates)
+    if ($candidates.Count -eq 0) { return $null }
+    foreach ($item in $candidates) {
+        $path = $item.FullName
+        $signature = Get-AuthenticodeSignature -FilePath $path
+        $signer = '<none>'
+        if ($signature.SignerCertificate) { $signer = $signature.SignerCertificate.Subject }
+        Write-Host ("  Ollama candidate: {0} ({1} bytes, status={2})" -f $path, $item.Length, $signature.Status) -ForegroundColor DarkGray
+        Write-Host ("    signer: {0}" -f $signer) -ForegroundColor DarkGray
+        if (Test-OllamaSignature -Path $path) {
+            return $path
+        }
+    }
+    return $null
 }
 
 function Install-Ollama {
@@ -304,7 +369,7 @@ function Install-Ollama {
 }
 
 function Get-OllamaModels {
-    $ollama = Get-OllamaPath
+    $ollama = $Script:OllamaExe
     if (-not $ollama) { return $null }
     try {
         $list = & $ollama list 2>$null
@@ -330,7 +395,7 @@ function Install-ThxModel {
         Write-Status 'THX-02 model' 'SKIPPED' 'download declined'
         return
     }
-    $ollama = Get-OllamaPath
+    $ollama = $Script:OllamaExe
     Write-Host "Running: ollama pull $Script:ThxModel" -ForegroundColor Cyan
     & $ollama pull $Script:ThxModel
     if ($LASTEXITCODE -ne 0) { Add-Error 'ollama pull failed.' }
@@ -730,47 +795,55 @@ try {
     Initialize-Config
     $Script:ServicesConfig = Get-ServicesConfig
 
-    $ollama = Get-OllamaPath
+    # Signature-verified selection: known install locations are preferred
+    # over PATH hits (a stray "ollama" shim earlier in PATH can never shadow
+    # the real installation), and only a file signed by Ollama is ever used.
+    # The output above the decision lists every candidate that was examined.
+    $Script:OllamaExe = Select-OllamaExecutable
+    $ollama = $Script:OllamaExe
     if (-not $ollama -and $Script:ServicesConfig.thx_enabled) {
-        Install-Ollama | Out-Null
-        $ollama = Get-OllamaPath
+        if (@(Get-OllamaCandidates).Count -eq 0) {
+            Install-Ollama | Out-Null
+            $Script:OllamaExe = Select-OllamaExecutable
+            $ollama = $Script:OllamaExe
+        }
     }
     if ($ollama) {
-        if (Test-OllamaSignature $ollama) {
-            Write-Status 'Ollama' 'PASS' $ollama
-            $ollamaServing = $false
-            if (-not $Script:ServicesConfig.thx_enabled) {
-                # THX is disabled: detect and report the installation only.
-                # Never start it, never pull a model, never contact the API.
-                Write-Status 'Ollama service' 'SKIPPED' 'thx disabled in config (not contacted)'
-            }
-            elseif ($Script:ServicesConfig.auto_start) {
-                # Ollama is managed by this launcher: default command is
-                # "<ollama> serve"; services.ollama_start_command overrides it.
-                # An already-running Ollama is probed and left untouched.
-                $serveCommand = [string]$Script:ServicesConfig.ollama_start_command
-                if (-not $serveCommand) { $serveCommand = '"' + $ollama + '" serve' }
-                $ollamaServing = Start-ManagedService -Name 'ollama' -DisplayName 'Ollama service' `
-                    -Command $serveCommand `
-                    -Probe { Test-HttpHealth -Url $Script:OllamaApiUrl }
-                if ($ollamaServing) { Install-ThxModel }
-                else { Add-Error 'Ollama is installed but not serving; THX-02 model handling is skipped (fallback mode).' }
-            }
-            else {
-                $ollamaServing = Test-HttpHealth -Url $Script:OllamaApiUrl
-                if ($ollamaServing) { Install-ThxModel }
-                else { Add-Error 'Ollama is installed but not serving (services.auto_start is false); THX-02 model handling is skipped.' }
-            }
+        Write-Status 'Ollama' 'PASS' $ollama
+        $ollamaServing = $false
+        if (-not $Script:ServicesConfig.thx_enabled) {
+            # THX is disabled: detect and report the installation only.
+            # Never start it, never pull a model, never contact the API.
+            Write-Status 'Ollama service' 'SKIPPED' 'thx disabled in config (not contacted)'
+        }
+        elseif ($Script:ServicesConfig.auto_start) {
+            # Ollama is managed by this launcher: default command is
+            # "<ollama> serve"; services.ollama_start_command overrides it.
+            # An already-running Ollama is probed and left untouched.
+            $serveCommand = [string]$Script:ServicesConfig.ollama_start_command
+            if (-not $serveCommand) { $serveCommand = '"' + $ollama + '" serve' }
+            $ollamaServing = Start-ManagedService -Name 'ollama' -DisplayName 'Ollama service' `
+                -Command $serveCommand `
+                -Probe { Test-HttpHealth -Url $Script:OllamaApiUrl }
+            if ($ollamaServing) { Install-ThxModel }
+            else { Add-Error 'Ollama is installed but not serving; THX-02 model handling is skipped (fallback mode).' }
         }
         else {
-            Write-Status 'Ollama' 'FAIL' 'signature verification failed'
-            Add-Error 'The Ollama executable is not correctly signed. Not using it.'
+            $ollamaServing = Test-HttpHealth -Url $Script:OllamaApiUrl
+            if ($ollamaServing) { Install-ThxModel }
+            else { Add-Error 'Ollama is installed but not serving (services.auto_start is false); THX-02 model handling is skipped.' }
         }
     }
     else {
         if ($Script:ServicesConfig.thx_enabled) {
-            Write-Status 'Ollama' 'BLOCKED' 'not installed'
-            Add-Error 'Ollama is missing; THX-02 is unavailable. The system runs in fallback mode.'
+            if (@(Get-OllamaCandidates).Count -gt 0) {
+                Write-Status 'Ollama' 'FAIL' 'none passed verification'
+                Add-Error 'Ollama files were found but none passed signature verification (see the candidate list above). Nothing unverified is ever executed. Reinstall from https://ollama.com or remove the unverified file.'
+            }
+            else {
+                Write-Status 'Ollama' 'BLOCKED' 'not installed'
+                Add-Error 'Ollama is missing; THX-02 is unavailable. The system runs in fallback mode.'
+            }
         }
         else {
             Write-Status 'Ollama' 'NOT CONFIGURED' 'thx disabled in config; install not required'
@@ -780,13 +853,32 @@ try {
     if ($Script:ServicesConfig.auto_start) {
         if ($Script:ServicesConfig.qwen_enabled) {
             # Help the user configure the Qwen start command: if llama-server
-            # is on PATH we print the exact line to paste. We never guess a
-            # model path and never start a guessed command.
+            # is on PATH we print the exact line(s) to paste, backed by real
+            # .gguf discovery. We never guess a model path and never start a
+            # guessed command - the user chooses exactly one line.
             $qwenHint = 'Set services.qwen_start_command in config\config.yaml (e.g. llama-server -m C:\models\qwen.gguf --port 8090) and this launcher will run it for you.'
             $llama = Get-Command 'llama-server' -ErrorAction SilentlyContinue
             if (-not $llama) { $llama = Get-Command 'llama-server.exe' -ErrorAction SilentlyContinue }
             if ($llama) {
-                $qwenHint = "llama-server detected at $($llama.Source). Set services.qwen_start_command in config\config.yaml to: `"$($llama.Source)`" -m <your-qwen-gguf> --port 8090"
+                $qwenHint = "llama-server detected at $($llama.Source)."
+                $modelsJson = & $Script:VenvPython -m orchestrator.cli --base-dir $Script:Root qwen-models --json --server "$($llama.Source)"
+                if ($LASTEXITCODE -eq 0 -and $modelsJson) {
+                    $qm = $modelsJson | ConvertFrom-Json
+                    $modelList = @($qm.models)
+                    if ($modelList.Count -gt 0) {
+                        $lines = @('  Candidate .gguf models found - set services.qwen_start_command in config\config.yaml to exactly one of:')
+                        foreach ($m in $modelList) {
+                            $lines += ('    "{0}" -m "{1}" --port 8090' -f $llama.Source, $m.path)
+                        }
+                        $qwenHint = $qwenHint + "`n" + ($lines -join "`n")
+                    }
+                    else {
+                        $qwenHint = $qwenHint + " No .gguf models were found in the default locations - run 'qwen-models --root <dir>' in the console, or set services.qwen_start_command in config\config.yaml to: `"$($llama.Source)`" -m <your-qwen-gguf> --port 8090"
+                    }
+                }
+                else {
+                    $qwenHint = $qwenHint + " Set services.qwen_start_command in config\config.yaml to: `"$($llama.Source)`" -m <your-qwen-gguf> --port 8090"
+                }
             }
             Start-ManagedService -Name 'qwen' -DisplayName 'Qwen service' `
                 -Command ([string]$Script:ServicesConfig.qwen_start_command) `
@@ -811,7 +903,7 @@ try {
             Start-ManagedService -Name 'arena' -DisplayName 'Arena bridge service' `
                 -Command ([string]$Script:ServicesConfig.arena_start_command) `
                 -Probe { Invoke-ArenaBridgeProbe } `
-                -Hint 'Set services.arena_start_command in config\config.yaml to auto-start your Arena bridge.' | Out-Null
+                -Hint 'The Arena bridge is provided by your own Arena tooling - DRIFTLINE never guesses its startup command. Capture the exact command of a running bridge (TROUBLESHOOTING "Arena bridge") and put it in services.arena_start_command in config\config.yaml; the launcher then starts it hidden and .\stop.ps1 stops it.' | Out-Null
         }
         else {
             Write-Status 'Arena bridge service' 'SKIPPED' 'disabled in config (not contacted)'
