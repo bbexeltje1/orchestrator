@@ -453,3 +453,40 @@ def resolve_secret(cfg: Config, env: Optional[Dict[str, str]] = None) -> Optiona
 
 def config_path_for(base_dir: Path) -> Path:
     return Path(base_dir) / "config" / "config.yaml"
+
+
+def upgrade_config_file(config_path: Path) -> List[str]:
+    """Append any missing top-level sections from ``DEFAULT_CONFIG``.
+
+    Non-destructive by design: existing sections, keys, values and comments
+    are never touched - the file is only appended to. Used by ``init
+    --upgrade`` so a config written by an older version gains new sections
+    (e.g. ``services``) without a manual edit. Returns the names of the
+    appended sections.
+    """
+    if yaml is None:
+        raise ConfigError("PyYAML is required to upgrade configuration")
+    config_path = Path(config_path)
+    existing_raw = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+    loaded: Dict[str, Any] = {}
+    if existing_raw.strip():
+        try:
+            loaded = yaml.safe_load(existing_raw) or {}
+        except yaml.YAMLError as exc:
+            raise ConfigError(f"Failed to parse {config_path}: {exc}") from exc
+        if not isinstance(loaded, dict):
+            raise ConfigError(f"{config_path} must contain a YAML mapping")
+
+    added: List[str] = []
+    blocks: List[str] = []
+    for section, default in DEFAULT_CONFIG.items():
+        if section in loaded:
+            continue
+        blocks.append(yaml.safe_dump({section: default}, sort_keys=False).rstrip())
+        added.append(section)
+    if blocks:
+        with config_path.open("a", encoding="utf-8") as handle:
+            if existing_raw and not existing_raw.endswith("\n"):
+                handle.write("\n")
+            handle.write("\n" + "\n".join(blocks) + "\n")
+    return added

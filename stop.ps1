@@ -5,8 +5,10 @@
 #      "orchestrator" module and this project's directory.
 #   2. Background services recorded in run\*.json by start.ps1 / play.cmd
 #      (stopped as a process tree, including their hidden cmd wrapper).
-# Unrelated Python processes and services you started yourself are never
-# touched.
+# Every recorded PID is re-verified against its recorded process name and
+# command line before anything is stopped (PID-reuse guard): a PID we cannot
+# positively identify as ours is left strictly alone. Unrelated Python
+# processes and services you started yourself are never touched.
 
 #requires -Version 5.1
 [CmdletBinding()]
@@ -44,11 +46,29 @@ $aliveServices = @()
 foreach ($record in $records) {
     $pidProp = $record.PSObject.Properties['pid']
     $nameProp = $record.PSObject.Properties['name']
+    $procNameProp = $record.PSObject.Properties['process_name']
+    $cmdProp = $record.PSObject.Properties['command']
     if (-not $pidProp) { continue }
-    if (Get-Process -Id $pidProp.Value -ErrorAction SilentlyContinue) {
-        $name = if ($nameProp) { $nameProp.Value } else { 'service' }
-        $aliveServices += , [pscustomobject]@{ Name = $name; Pid = $pidProp.Value }
+    $name = 'service'
+    if ($nameProp -and $nameProp.Value) { $name = [string]$nameProp.Value }
+    $procId = $pidProp.Value
+    $proc = Get-CimInstance Win32_Process -Filter "ProcessId = $procId" -ErrorAction SilentlyContinue
+    if (-not $proc) { continue }
+    # Ownership check (guards against PID reuse): the live process must still
+    # be the one this launcher started. Anything we cannot positively identify
+    # as ours is left strictly alone.
+    $ours = $true
+    if ($procNameProp -and $procNameProp.Value) {
+        if ($proc.Name -notmatch ('^' + [regex]::Escape([string]$procNameProp.Value) + '(\.exe)?$')) { $ours = $false }
     }
+    if ($ours -and $cmdProp -and $cmdProp.Value) {
+        if (-not $proc.CommandLine -or $proc.CommandLine -notmatch [regex]::Escape([string]$cmdProp.Value)) { $ours = $false }
+    }
+    if (-not $ours) {
+        Write-Host ("  run\{0}.json: PID {1} is no longer the process this launcher started; leaving it alone." -f $name, $procId) -ForegroundColor Yellow
+        continue
+    }
+    $aliveServices += , [pscustomobject]@{ Name = $name; Pid = $procId }
 }
 
 # --- orchestrator Python processes -----------------------------------------

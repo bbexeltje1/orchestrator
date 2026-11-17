@@ -9,6 +9,7 @@ from orchestrator.config import (
     load_config,
     load_dotenv,
     resolve_secret,
+    upgrade_config_file,
     validate_config,
 )
 
@@ -94,3 +95,36 @@ def test_services_bad_wait_rejected(base_dir):
     config.services.health_wait_seconds = 0
     with pytest.raises(ConfigError):
         validate_config(config)
+
+
+def test_upgrade_appends_missing_services_section(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("project:\n  name: KEEPME\n", encoding="utf-8")
+    added = upgrade_config_file(path)
+    assert "services" in added
+    text = path.read_text(encoding="utf-8")
+    assert "KEEPME" in text
+    assert "qwen_start_command" in text
+    config = load_config(config_path=path, base_dir=tmp_path)
+    assert config.project.name == "KEEPME"
+    assert config.services.auto_start is True
+
+
+def test_upgrade_is_noop_when_complete(base_dir):
+    path = base_dir / "config" / "config.yaml"
+    before = path.read_text(encoding="utf-8")
+    assert upgrade_config_file(path) == []
+    assert path.read_text(encoding="utf-8") == before
+
+
+def test_upgrade_preserves_existing_sections_and_comments(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("# my comment\nqwen:\n  enabled: false\n", encoding="utf-8")
+    added = upgrade_config_file(path)
+    assert "qwen" not in added
+    assert "services" in added
+    text = path.read_text(encoding="utf-8")
+    assert "# my comment" in text
+    config = load_config(config_path=path, base_dir=tmp_path)
+    assert config.qwen.enabled is False
+    assert config.services.health_wait_seconds == 60

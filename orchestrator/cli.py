@@ -365,15 +365,26 @@ def cmd_approve(args: argparse.Namespace) -> int:
 
 
 def cmd_init(args: argparse.Namespace) -> int:
-    from .config import DEFAULT_CONFIG, config_path_for
+    from .config import DEFAULT_CONFIG, config_path_for, upgrade_config_file
     import yaml
 
     base = Path(args.base_dir)
     target = config_path_for(base)
     target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists() and not args.force:
-        print(f"{target} already exists; use --force to overwrite")
+    if target.exists() and not args.force and not args.upgrade:
+        print(f"{target} already exists; use --force to overwrite or --upgrade to add missing sections")
         return 1
+    if args.upgrade and target.exists() and not args.force:
+        try:
+            added = upgrade_config_file(target)
+        except ConfigError as exc:
+            print(f"configuration error: {exc}")
+            return 2
+        if added:
+            print(f"upgraded {target}: added missing sections: {', '.join(added)}")
+        else:
+            print(f"{target} already has every known section; nothing changed")
+        return 0
     target.write_text(yaml.safe_dump(DEFAULT_CONFIG, sort_keys=False), encoding="utf-8")
     print(f"wrote {target}")
     return 0
@@ -403,7 +414,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_approve.add_argument("approval_id")
     p_approve.add_argument("--deny", action="store_true")
     p_init = sub.add_parser("init", help="write config/config.yaml from defaults")
-    p_init.add_argument("--force", action="store_true")
+    p_init.add_argument("--force", action="store_true", help="overwrite an existing config")
+    p_init.add_argument(
+        "--upgrade",
+        action="store_true",
+        help="add sections missing from an existing config; existing values are never touched",
+    )
     return parser
 
 

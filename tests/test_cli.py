@@ -82,3 +82,22 @@ def test_cli_error_is_reported_not_raised(base_dir):
     out, done = ConsoleSession(base_dir=base_dir).execute("approve does-not-exist")
     assert done is False
     assert out.strip()
+
+
+def test_init_upgrade_adds_services_section(base_dir):
+    from pathlib import Path
+
+    config_path = Path(base_dir) / "config" / "config.yaml"
+    config_path.write_text("project:\n  name: DRIFTLINE\n", encoding="utf-8")
+    out, done = ConsoleSession(base_dir=base_dir).execute("init --upgrade")
+    assert done is False
+    assert "added missing sections" in out
+    assert "services" in out
+    text = config_path.read_text(encoding="utf-8")
+    assert "qwen_start_command" in text
+    assert "project" in text  # existing content preserved
+
+
+def test_init_upgrade_reports_nothing_changed(base_dir):
+    out, _ = ConsoleSession(base_dir=base_dir).execute("init --upgrade")
+    assert "nothing changed" in out

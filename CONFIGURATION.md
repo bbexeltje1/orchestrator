@@ -137,7 +137,11 @@ processes the launcher started (recorded in `run\`) and nothing else.
 The commands are plain Windows command lines; quote executables whose path
 contains spaces. Starting a service is always opt-in via these commands (or
 the Ollama default); the launcher never modifies, reconfigures or replaces an
-existing installation.
+existing installation. A config file written by an older version is upgraded
+automatically on startup: missing sections (such as `services`) are appended,
+existing keys, values and comments are never touched. Any key here can also be
+set without editing the file, e.g.
+`DRIFTLINE_SERVICES_QWEN_START_COMMAND=llama-server -m C:\models\qwen.gguf --port 8090`.
 
 ## server
 

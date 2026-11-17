@@ -136,6 +136,8 @@ def build(dist_dir: Path | None = None) -> Path:
     files = list(_iter_files())
     with zipfile.ZipFile(artifact, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
         for relative in files:
+            if relative.as_posix() == "MANIFEST.txt":
+                continue  # the generated manifest below replaces the static copy
             zf.write(ROOT / relative, arcname=relative.as_posix())
         # Manifest inside the ZIP too.
         manifest = "\n".join(relative.as_posix() for relative in files)

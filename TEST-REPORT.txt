@@ -1,51 +1,62 @@
-DRIFTLINE ORCHESTRATOR v1.1.0 - TEST REPORT
+DRIFTLINE ORCHESTRATOR v1.1.1 - TEST REPORT
 Generated (UTC): 2026-11-17
-Interpreter: 3.11.2
+Interpreter: 3.11.2 (build environment; target runtime is Windows Python 3.12)
 
-CHANGE IN v1.1.0
-----------------
-Added: one-touch "just play" experience - no separate terminals.
-  1. play.cmd: double-click launcher. Runs start.ps1 with an execution
-     policy bypass, keeps the window open on failure, forwards arguments
-     (e.g. -Force for an unattended first run).
-  2. Background service auto-start: start.ps1 now starts Ollama
-     ("<detected ollama> serve") and any service with a configured
-     services.*_start_command (Qwen/llama.cpp, OmniRoute, Arena bridge)
-     as hidden background processes, waits for a real health answer and
-     reports the result. Services that are already running are only
-     probed and never touched. Startup output is captured in
-     logs/service-<name>.out.log and .err.log; PIDs are recorded in
-     run/<name>.json.
-  3. Interactive console: the launcher now ends in
-     "python -m orchestrator.cli console" - a driftline> prompt
-     (help/doctor/report/status/submit/approve/init/quit) that routes
-     through the exact same argparse handlers as the non-interactive
-     CLI. Everything is driven from the one window.
-  4. stop.ps1 now also stops exactly the background services the
-     launcher recorded (process-tree stop), and nothing else.
-  5. New config section "services" (auto_start, health_wait_seconds,
-     ollama/qwen/omniroute/arena start commands) in config.py,
-     config.yaml and config.example.yaml, with validation.
-Fixed: offline tests no longer write data/orchestrator.db outside their
-  own tmp dirs (conftest anchors config.storage.database to the test
-  base dir).
+CHANGE IN v1.1.1 (Windows diagnostic reconciliation)
+----------------------------------------------------
+Reconciled against real Windows 10 / Windows PowerShell 5.1 diagnostics.
 
-Earlier: v1.0.1 fixed .\start.ps1 -Doctor on a fresh extraction
-($Script:VenvPython used before Initialize-VirtualEnv ran).
+Fixed:
+  1. Config upgrade path: a config/config.yaml written by v1.0.x is now
+     upgraded in place on startup ("init --upgrade"): missing sections
+     (notably "services" with qwen_start_command) are appended, existing
+     keys, values and comments are never touched. This closes the "config
+     has no qwen_start_command setting" finding for upgraded installs.
+  2. Windows PowerShell 5.1 native-argument quoting bug: Get-ServicesConfig
+     passed Python code containing double quotes via "python -c", which
+     PS 5.1 mangles (embedded quotes are not escaped). The snippet is now
+     piped on stdin ("python -"), which is immune to the bug. Verified
+     against the exact extracted snippet, including the v1.0.x-config and
+     env-override cases.
+  3. stop.ps1 PID-reuse guard: every recorded PID is re-verified against
+     its recorded process name AND command line before anything is
+     stopped; a PID that cannot be positively identified as started by
+     the launcher is left strictly alone.
+  4. Disabled services are never started or contacted: auto-start now
+     honours qwen/thx/omniroute/arena "enabled" flags. A disabled service
+     reports NOT CONFIGURED / SKIPPED "disabled in config (not contacted)"
+     instead of being probed. OmniRoute is never enabled automatically;
+     no Arena dispatch occurs (workflow.dry_run remains true).
+  5. PS 5.1 TLS: TLS 1.2 is forced on for Invoke-WebRequest so the
+     pypi/python.org/ollama.com calls work on stock Windows PowerShell 5.1.
+  6. Qwen startup configuration guidance: when qwen_start_command is empty
+     and llama-server(.exe) is on PATH, the launcher prints the exact line
+     to paste. It never guesses a model path and never starts a guessed
+     command.
+
+Kept as-is (per requirements): workflow.dry_run=true, omniroute.enabled
+false, no model downloads during testing, existing Ollama/llama.cpp
+installations detected and never modified, already-running services only
+probed.
+
+NOTE ON THE WINDOWS DIAGNOSTIC "play.cmd is missing": the repository at
+commit 9a25563 (branch arena/f27baaa0-orchestrator) contains play.cmd and
+the services config. The diagnostic directory is a v1.0.x copy that was
+never updated (base commit e11cd92 predates the feature). Update the
+directory from the branch or extract the v1.1.1 release ZIP.
 
 OFFLINE TEST SUITE
 ------------------
-tests=111 failures=0 errors=0 skipped=0 duration~55s
+tests=116 failures=0 errors=0 skipped=0
 
 Test modules:
   tests/test_arena.py: 11
-  tests/test_cli.py: 11            (new: console routing, parsing, exit,
-                                    submit planning via stub, dry-run gate)
-  tests/test_config.py: 11         (+3: services defaults, env override,
-                                    validation)
+  tests/test_cli.py: 13           (+2: init --upgrade via console)
+  tests/test_config.py: 14        (+3: upgrade appends services, is
+                                   idempotent, preserves values/comments)
   tests/test_database.py: 7
   tests/test_dispatch_safety.py: 7
-  tests/test_packaging.py: 4       (+ run/ exclusion lock-in)
+  tests/test_packaging.py: 4
   tests/test_policy.py: 8
   tests/test_qwen.py: 9
   tests/test_state_machine.py: 7
@@ -55,28 +66,48 @@ Test modules:
   tests/test_workflow.py: 7
 
 All external services were replaced by local stubs speaking the real
-protocols (MCP Streamable HTTP + stdio, Ollama /v1/systemone,
-OpenAI-compatible /v1/chat/completions). No test contacted a real
-Arena, Ollama, Qwen or OmniRoute instance.
+protocols. No test contacted a real Arena, Ollama, Qwen or OmniRoute
+instance. No large models were downloaded.
 
-VERIFICATION NOTES (build environment has no Windows, no live AI services)
--------------------------------------------------------------------------
-  1. Full offline suite ran green from the working tree, and the
-     repository root stayed free of data/ and logs/ afterwards.
-  2. start.ps1/stop.ps1/doctor.ps1/test.ps1 passed structural
-     verification (braces, parentheses, brackets, string quotes and
-     here-strings balanced). The PowerShell 7.4.6 parser check could
-     NOT run in this environment (no pwsh available); it remains to be
-     run on the Windows host:
-       pwsh -NoProfile -Command
-         '[System.Management.Automation.Language.Parser]::ParseFile(
-           ".\start.ps1", [ref]$null, [ref]$errs); $errs'
-  3. The embedded services-config bridge (venv Python reads the
-     services section of config/config.yaml and prints JSON) was
-     executed directly and produced the expected JSON payload.
-  4. The console was exercised end-to-end with piped input
-     (help/status/submit/quit): correct routing, and a submit without
-     a live Qwen is reported BLOCKED - nothing is faked.
+VERIFICATION PERFORMED (build environment is Linux; NOT Windows)
+----------------------------------------------------------------
+  1. Full offline suite green (116/116); repo root free of data/ and
+     logs/ afterwards.
+  2. Extracted the Get-ServicesConfig Python snippet verbatim from
+     start.ps1 and executed it exactly as the launcher does (piped on
+     stdin, DRIFTLINE_CONFIG_ROOT set): correct JSON for (a) the current
+     config, (b) a v1.0.x config without a services section, (c) env
+     overrides with string booleans normalising correctly.
+  3. "init --upgrade" executed for real against a v1.0.x-style config:
+     appended missing sections including services, preserved existing
+     keys and comments, second run reported "nothing changed".
+  4. start.ps1/stop.ps1/doctor.ps1/test.ps1 passed structural
+     verification (braces, parentheses, brackets, quotes, here-strings).
+  5. play.cmd reviewed statically (cd to its own directory, calls
+     Windows PowerShell with -NoProfile -ExecutionPolicy Bypass -File
+     start.ps1, forwards arguments, pauses on failure).
+
+NOT CLAIMED: Windows execution. PowerShell 5.1 parsing and double-click
+behaviour remain to be confirmed on the Windows host (see below).
+
+REMAINING WINDOWS-ONLY MANUAL TESTS
+-----------------------------------
+  1. PS 5.1 parser check:
+       powershell -NoProfile -Command
+         "$e=$null; [System.Management.Automation.Language.Parser]::ParseFile(
+         '.\start.ps1',[ref]$null,[ref]$e); $e"
+     (repeat for stop.ps1).
+  2. Double-click play.cmd: window stays open, banner shows v1.1.1,
+     "Configuration" row reports the upgraded/created config.
+  3. Ollama behaviour: with Ollama already serving, the report shows
+     "Ollama service ... already running (left untouched)"; with it
+     stopped, "healthy in the background (PID ...)" and run\ollama.json
+     exists; .\stop.ps1 stops only that record.
+  4. With services.qwen_start_command set to the real llama-server line:
+     "Qwen service ... healthy in the background" and "Qwen local PASS".
+  5. .\stop.ps1 must NOT stop: the Ollama tray app (if it owns port
+     11434 we never start a second copy), any user-started llama-server,
+     or any unrelated python/cmd process.
 
 READINESS PROBE (build host has no live AI services)
 -----------------------------------------------------
@@ -95,24 +126,25 @@ READINESS PROBE (build host has no live AI services)
   Git repository           PASS
   Workflow                 IDLE
 
-  Errors:
-    - configured endpoint: McpTransportError: streamable HTTP request
-      failed: [Errno 111] Connection refused
-    - transport streamable_http at configured endpoint could not be
-      established: streamable HTTP request failed: [Errno 111]
-      Connection refused
-    - ARENA_NOT_CONNECTED: no MCP transport could be established. The
-      orchestrator will run in fallback mode and will not dispatch
-      implementation tasks.
-
 ARENA INTEGRATION STATUS
 ------------------------
-Adapter IMPLEMENTED and TESTED against a real local MCP server
-(Streamable HTTP and stdio) with runtime tool/schema discovery.
-Live bridge at 127.0.0.1:17864 is UNVERIFIED from the build host;
-on the target machine run:  .\start.ps1 -Doctor
+Adapter IMPLEMENTED and TESTED against a real local MCP server with
+runtime tool/schema discovery. Live bridge at 127.0.0.1:17864 is
+UNVERIFIED from the build host; on the target machine run:
+  .\start.ps1 -Doctor
+No task is ever dispatched while workflow.dry_run is true.
 
 HOW TO RUN ON WINDOWS
 ---------------------
+  Update the project directory first (git pull this branch, or extract
+  release/DRIFTLINE-Orchestrator-v1.1.1.zip), then:
   Double-click play.cmd        (or .\start.ps1 from a terminal)
-  Stop everything:  .\stop.ps1
+  Acceptance run:  .\play.cmd -DryRun -SkipModelDownload
+  Stop everything: .\stop.ps1
+
+CHANGE HISTORY
+--------------
+v1.1.0 added play.cmd, background service auto-start, the interactive
+console, managed stop, and the services config section (111 tests).
+v1.0.1 fixed .\start.ps1 -Doctor on a fresh extraction ($Script:VenvPython
+used before Initialize-VirtualEnv ran).

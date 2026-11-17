@@ -28,7 +28,16 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$Script:AppVersion = '1.1.0'
+# Windows PowerShell 5.1 may default to TLS 1.0 for Invoke-WebRequest; make
+# sure HTTPS calls (pypi, python.org, ollama.com) negotiate TLS 1.2. No-op
+# where the framework already defaults to it.
+try {
+    [Net.ServicePointManager]::SecurityProtocol = `
+        [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+}
+catch { }
+
+$Script:AppVersion = '1.1.1'
 $Script:Root = $PSScriptRoot
 if (-not $Script:Root) { $Script:Root = (Get-Location).Path }
 Set-Location -Path $Script:Root
@@ -337,32 +346,75 @@ function Test-HttpHealth {
 }
 
 function Invoke-ArenaBridgeProbe {
-    $body = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"driftline-start","version":"1.1.0"}}}'
+    $body = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"driftline-start","version":"1.1.1"}}}'
     return Test-HttpHealth -Url $Script:ArenaUrl -Method 'Post' -Body $body `
         -ContentType 'application/json' -Headers @{ Accept = 'application/json, text/event-stream' }
 }
 
 function Get-ServicesConfig {
     # Reads the services section of config/config.yaml via the venv Python
-    # (PyYAML), so no YAML parsing is duplicated here in PowerShell.
+    # (PyYAML), so no YAML parsing is duplicated here in PowerShell. The
+    # snippet is piped on stdin (python -) instead of passed via -c: Windows
+    # PowerShell 5.1 mangles native command arguments that contain embedded
+    # double quotes.
     $defaults = [ordered]@{
-        auto_start             = $true
-        health_wait_seconds    = 60
-        ollama_start_command   = ''
-        qwen_start_command     = ''
+        auto_start              = $true
+        health_wait_seconds     = 60
+        ollama_start_command    = ''
+        qwen_start_command      = ''
         omniroute_start_command = ''
-        arena_start_command    = ''
+        arena_start_command     = ''
+        qwen_enabled            = $true
+        thx_enabled             = $true
+        omniroute_enabled       = $false
+        arena_enabled           = $true
     }
     try {
         $code = @'
 import json, os, pathlib, yaml
-p = pathlib.Path(os.environ["DRIFTLINE_CONFIG_ROOT"]) / "config" / "config.yaml"
-data = yaml.safe_load(p.read_text(encoding="utf-8")) if p.exists() else {}
-print(json.dumps((data or {}).get("services") or {}))
+
+def as_bool(value, default):
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return bool(value)
+
+root = os.environ.get("DRIFTLINE_CONFIG_ROOT", ".")
+path = pathlib.Path(root) / "config" / "config.yaml"
+data = {}
+if path.exists():
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
+services = dict(data.get("services") or {})
+for key in ("auto_start", "health_wait_seconds", "ollama_start_command",
+            "qwen_start_command", "omniroute_start_command", "arena_start_command"):
+    env_key = "DRIFTLINE_SERVICES_" + key.upper()
+    if env_key in os.environ:
+        services[key] = os.environ[env_key]
+
+out = {
+    "auto_start": as_bool(services.get("auto_start"), True),
+    "health_wait_seconds": int(services.get("health_wait_seconds") or 60),
+    "ollama_start_command": str(services.get("ollama_start_command") or ""),
+    "qwen_start_command": str(services.get("qwen_start_command") or ""),
+    "omniroute_start_command": str(services.get("omniroute_start_command") or ""),
+    "arena_start_command": str(services.get("arena_start_command") or ""),
+}
+for section, key in (("qwen", "qwen_enabled"), ("thx", "thx_enabled"),
+                     ("omniroute", "omniroute_enabled"), ("arena", "arena_enabled")):
+    value = (data.get(section) or {}).get("enabled")
+    env_key = "DRIFTLINE_" + section.upper() + "_ENABLED"
+    if env_key in os.environ:
+        value = os.environ[env_key]
+    if value is None:
+        value = section != "omniroute"
+    out[key] = as_bool(value, section != "omniroute")
+print(json.dumps(out))
 '@
         $env:DRIFTLINE_CONFIG_ROOT = $Script:Root
         try {
-            $raw = & $Script:VenvPython -c $code
+            $raw = $code | & $Script:VenvPython -
         }
         finally {
             Remove-Item Env:DRIFTLINE_CONFIG_ROOT -ErrorAction SilentlyContinue
@@ -388,13 +440,14 @@ function Get-ServiceRecord($Name) {
     catch { return $null }
 }
 
-function Save-ServiceRecord($Name, $ProcessId, $Command) {
+function Save-ServiceRecord($Name, $Process, $Command) {
     if (-not (Test-Path $Script:RunDir)) { New-Item -ItemType Directory -Path $Script:RunDir | Out-Null }
     $record = [ordered]@{
-        name       = $Name
-        pid        = $ProcessId
-        command    = $Command
-        started_at = (Get-Date).ToString('o')
+        name         = $Name
+        pid          = $Process.Id
+        process_name = $Process.ProcessName
+        command      = $Command
+        started_at   = (Get-Date).ToString('o')
     }
     $record | ConvertTo-Json | Set-Content -Path (Join-Path $Script:RunDir "$Name.json") -Encoding UTF8
 }
@@ -451,7 +504,7 @@ function Start-ManagedService {
             Write-Status $DisplayName 'BLOCKED' 'failed to start'
             return $false
         }
-        Save-ServiceRecord $Name $process.Id $Command
+        Save-ServiceRecord $Name $process $Command
         $record = Get-ServiceRecord $Name
     }
 
@@ -483,6 +536,10 @@ function Start-ManagedService {
 # ---------------------------------------------------------------------------
 
 function Test-Qwen {
+    if ($Script:ServicesConfig -and -not $Script:ServicesConfig.qwen_enabled) {
+        Write-Status 'Qwen local' 'NOT CONFIGURED' 'disabled in config (not contacted)'
+        return $false
+    }
     $url = $Script:QwenUrl
     try {
         $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 8
@@ -499,6 +556,10 @@ function Test-Qwen {
 }
 
 function Test-OmniRoute {
+    if ($Script:ServicesConfig -and -not $Script:ServicesConfig.omniroute_enabled) {
+        Write-Status 'OmniRoute' 'NOT CONFIGURED' 'disabled in config (not contacted)'
+        return $false
+    }
     $url = $Script:OmniRouteUrl
     try {
         $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 8
@@ -512,6 +573,10 @@ function Test-OmniRoute {
 }
 
 function Test-ArenaBridge {
+    if ($Script:ServicesConfig -and -not $Script:ServicesConfig.arena_enabled) {
+        Write-Status 'Arena bridge' 'NOT CONFIGURED' 'disabled in config (not contacted)'
+        return $false
+    }
     $url = $Script:ArenaUrl
     if (Invoke-ArenaBridgeProbe) {
         Write-Status 'Arena bridge' 'PASS' "answered an MCP initialize request at $url"
@@ -535,7 +600,23 @@ function Initialize-Config {
         Write-Status 'Configuration' 'PASS' 'created config/config.yaml from the template'
     }
     else {
-        Write-Status 'Configuration' 'PASS' 'existing config/config.yaml preserved'
+        # Upgrade in place: add sections introduced by newer versions (for
+        # example "services") without touching any existing key, value or
+        # comment. This is what brings a v1.0.x config up to date.
+        $output = & $Script:VenvPython -m orchestrator.cli --base-dir $Script:Root init --upgrade
+        if ($LASTEXITCODE -eq 0) {
+            $joined = "$output".Trim()
+            if ($joined -match 'nothing changed') {
+                Write-Status 'Configuration' 'PASS' 'existing config/config.yaml preserved (all sections present)'
+            }
+            else {
+                Write-Status 'Configuration' 'PASS' $joined
+            }
+        }
+        else {
+            Write-Status 'Configuration' 'BLOCKED' "config upgrade failed: $output"
+            Add-Error 'Could not upgrade config/config.yaml. Add the services section manually (see CONFIGURATION.md).'
+        }
     }
     if (-not (Test-Path (Join-Path $Script:Root '.env'))) {
         Copy-Item (Join-Path $Script:Root '.env.example') (Join-Path $Script:Root '.env')
@@ -618,7 +699,7 @@ try {
     $Script:ServicesConfig = Get-ServicesConfig
 
     $ollama = Get-OllamaPath
-    if (-not $ollama) {
+    if (-not $ollama -and $Script:ServicesConfig.thx_enabled) {
         Install-Ollama | Out-Null
         $ollama = Get-OllamaPath
     }
@@ -626,23 +707,27 @@ try {
         if (Test-OllamaSignature $ollama) {
             Write-Status 'Ollama' 'PASS' $ollama
             $ollamaServing = $false
-            if ($Script:ServicesConfig.auto_start) {
+            if (-not $Script:ServicesConfig.thx_enabled) {
+                # THX is disabled: detect and report the installation only.
+                # Never start it, never pull a model, never contact the API.
+                Write-Status 'Ollama service' 'SKIPPED' 'thx disabled in config (not contacted)'
+            }
+            elseif ($Script:ServicesConfig.auto_start) {
                 # Ollama is managed by this launcher: default command is
                 # "<ollama> serve"; services.ollama_start_command overrides it.
+                # An already-running Ollama is probed and left untouched.
                 $serveCommand = [string]$Script:ServicesConfig.ollama_start_command
                 if (-not $serveCommand) { $serveCommand = '"' + $ollama + '" serve' }
                 $ollamaServing = Start-ManagedService -Name 'ollama' -DisplayName 'Ollama service' `
                     -Command $serveCommand `
                     -Probe { Test-HttpHealth -Url $Script:OllamaApiUrl }
+                if ($ollamaServing) { Install-ThxModel }
+                else { Add-Error 'Ollama is installed but not serving; THX-02 model handling is skipped (fallback mode).' }
             }
             else {
                 $ollamaServing = Test-HttpHealth -Url $Script:OllamaApiUrl
-            }
-            if ($ollamaServing) {
-                Install-ThxModel
-            }
-            else {
-                Add-Error 'Ollama is installed but not serving; THX-02 model handling is skipped (fallback mode).'
+                if ($ollamaServing) { Install-ThxModel }
+                else { Add-Error 'Ollama is installed but not serving (services.auto_start is false); THX-02 model handling is skipped.' }
             }
         }
         else {
@@ -651,25 +736,54 @@ try {
         }
     }
     else {
-        Write-Status 'Ollama' 'BLOCKED' 'not installed'
-        Add-Error 'Ollama is missing; THX-02 is unavailable. The system runs in fallback mode.'
+        if ($Script:ServicesConfig.thx_enabled) {
+            Write-Status 'Ollama' 'BLOCKED' 'not installed'
+            Add-Error 'Ollama is missing; THX-02 is unavailable. The system runs in fallback mode.'
+        }
+        else {
+            Write-Status 'Ollama' 'NOT CONFIGURED' 'thx disabled in config; install not required'
+        }
     }
 
     if ($Script:ServicesConfig.auto_start) {
-        Start-ManagedService -Name 'qwen' -DisplayName 'Qwen service' `
-            -Command ([string]$Script:ServicesConfig.qwen_start_command) `
-            -Probe { Test-HttpHealth -Url $Script:QwenUrl } `
-            -Hint 'Set services.qwen_start_command in config\config.yaml (e.g. llama-server -m C:\models\qwen.gguf --port 8090) and this launcher will run it for you.' | Out-Null
+        if ($Script:ServicesConfig.qwen_enabled) {
+            # Help the user configure the Qwen start command: if llama-server
+            # is on PATH we print the exact line to paste. We never guess a
+            # model path and never start a guessed command.
+            $qwenHint = 'Set services.qwen_start_command in config\config.yaml (e.g. llama-server -m C:\models\qwen.gguf --port 8090) and this launcher will run it for you.'
+            $llama = Get-Command 'llama-server' -ErrorAction SilentlyContinue
+            if (-not $llama) { $llama = Get-Command 'llama-server.exe' -ErrorAction SilentlyContinue }
+            if ($llama) {
+                $qwenHint = "llama-server detected at $($llama.Source). Set services.qwen_start_command in config\config.yaml to: `"$($llama.Source)`" -m <your-qwen-gguf> --port 8090"
+            }
+            Start-ManagedService -Name 'qwen' -DisplayName 'Qwen service' `
+                -Command ([string]$Script:ServicesConfig.qwen_start_command) `
+                -Probe { Test-HttpHealth -Url $Script:QwenUrl } `
+                -Hint $qwenHint | Out-Null
+        }
+        else {
+            Write-Status 'Qwen service' 'SKIPPED' 'disabled in config'
+        }
 
-        Start-ManagedService -Name 'omniroute' -DisplayName 'OmniRoute service' `
-            -Command ([string]$Script:ServicesConfig.omniroute_start_command) `
-            -Probe { Test-HttpHealth -Url $Script:OmniRouteUrl } `
-            -Hint 'Optional. Set services.omniroute_start_command in config\config.yaml to auto-start OmniRoute.' | Out-Null
+        if ($Script:ServicesConfig.omniroute_enabled) {
+            Start-ManagedService -Name 'omniroute' -DisplayName 'OmniRoute service' `
+                -Command ([string]$Script:ServicesConfig.omniroute_start_command) `
+                -Probe { Test-HttpHealth -Url $Script:OmniRouteUrl } `
+                -Hint 'Optional. Set services.omniroute_start_command in config\config.yaml to auto-start OmniRoute.' | Out-Null
+        }
+        else {
+            Write-Status 'OmniRoute service' 'SKIPPED' 'disabled in config (not contacted)'
+        }
 
-        Start-ManagedService -Name 'arena' -DisplayName 'Arena bridge service' `
-            -Command ([string]$Script:ServicesConfig.arena_start_command) `
-            -Probe { Invoke-ArenaBridgeProbe } `
-            -Hint 'Set services.arena_start_command in config\config.yaml to auto-start your Arena bridge.' | Out-Null
+        if ($Script:ServicesConfig.arena_enabled) {
+            Start-ManagedService -Name 'arena' -DisplayName 'Arena bridge service' `
+                -Command ([string]$Script:ServicesConfig.arena_start_command) `
+                -Probe { Invoke-ArenaBridgeProbe } `
+                -Hint 'Set services.arena_start_command in config\config.yaml to auto-start your Arena bridge.' | Out-Null
+        }
+        else {
+            Write-Status 'Arena bridge service' 'SKIPPED' 'disabled in config (not contacted)'
+        }
     }
     else {
         Write-Host '  services.auto_start is false: services are probed but never started.' -ForegroundColor DarkGray

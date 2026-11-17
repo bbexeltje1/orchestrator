@@ -3,6 +3,16 @@
 Run `.\start.ps1 -Doctor` (or `.\doctor.ps1`) for a live readiness report.
 Every `BLOCKED` line includes the actual error that was observed.
 
+## Files from an older version (play.cmd missing, config without services)
+
+**`play.cmd` is missing / `config.yaml` has no `services` section** — the
+project directory is a **v1.0.x copy**; both were added in v1.1.x. Update the
+directory from the branch (`git pull`) or extract the current release ZIP over
+it. Run `.\play.cmd` afterwards and check the header shows the current
+version. On startup the launcher now **upgrades an existing `config.yaml`
+automatically** (adds missing sections such as `services`, never touching
+existing keys, values or comments) and reports what it added.
+
 ## Python runtime
 
 **`Python not found`** — the installer offers to install Python 3.12 user-locally
