@@ -28,17 +28,46 @@ path, or run from inside the repository.
 ## Qwen
 
 **`Qwen local BLOCKED`** — your llama.cpp server is not answering at
-`http://127.0.0.1:8090/v1/models`. Start it with your existing configuration:
+`http://127.0.0.1:8090/v1/models`. The one-command launcher can run it for
+you: set the command in `config/config.yaml` and re-run `.\play.cmd`:
+
+```yaml
+services:
+  qwen_start_command: llama-server -m C:\models\your-qwen.gguf --port 8090
+```
+
+Or start it yourself with your existing configuration:
 
 ```text
 llama-server -m <your-existing-qwen-gguf> --port 8090
 ```
 
 The orchestrator only reads `/v1/models` and posts `/v1/chat/completions`; it
-never starts, stops or reconfigures your server.
+never modifies, reconfigures or replaces your server. Auto-start runs exactly
+the command you configured, hidden in the background, and `.\stop.ps1` stops
+it again.
 
 **`qwen reachable but /models listed no models`** — the server is up but reports
 no loaded model. Reload the model in your existing llama.cpp setup.
+
+## Background services (play.cmd / start.ps1)
+
+**`<service> BLOCKED: process exited during startup`** or **`did not answer
+within Ns`** — the configured command did not produce a healthy service. The
+background output is captured in `logs/service-<name>.out.log` and
+`logs/service-<name>.err.log`; read the error log first. Typical causes: a
+wrong model path in `services.qwen_start_command`, a port already in use by
+another process (that process is never touched), or a missing runtime.
+
+**The launcher started a service I wanted to run myself** — set
+`services.auto_start: false` (probe only, never start anything) or leave the
+individual `*_start_command` empty. Already-running services are always only
+probed, never restarted or replaced.
+
+**`.\stop.ps1` did not stop my own service** — by design. stop.ps1 stops only
+the orchestrator's Python processes and the background services recorded in
+`run\` (i.e. started by play.cmd/start.ps1). Services you started yourself are
+yours to manage.
 
 ## OmniRoute
 

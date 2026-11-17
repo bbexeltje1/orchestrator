@@ -55,6 +55,7 @@ def test_zip_excludes_secret_and_runtime_files(tmp_path):
         ".git/",
         "data/",
         "logs/",
+        "run/",
         ".db",
         ".gguf",
         ".exe",

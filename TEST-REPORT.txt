@@ -1,27 +1,51 @@
-DRIFTLINE ORCHESTRATOR v1.0.1 - TEST REPORT
-Generated (UTC): 2026-11-16T14:22:43Z
-Interpreter: 3.13.18
+DRIFTLINE ORCHESTRATOR v1.1.0 - TEST REPORT
+Generated (UTC): 2026-11-17
+Interpreter: 3.11.2
 
-CHANGE IN v1.0.1
+CHANGE IN v1.1.0
 ----------------
-Fixed: .\start.ps1 -Doctor on a fresh extraction failed because
-$Script:VenvPython was used before Initialize-VirtualEnv ran.
-The -Doctor branch now validates Windows/PowerShell, checks internet,
-initializes the user-local Python runtime, creates the virtual
-environment, installs pinned runtime dependencies, then runs the
-diagnostic report. No Ollama install, no THX-02 download, no Arena
-dispatch and no idle mode occur in -Doctor.
+Added: one-touch "just play" experience - no separate terminals.
+  1. play.cmd: double-click launcher. Runs start.ps1 with an execution
+     policy bypass, keeps the window open on failure, forwards arguments
+     (e.g. -Force for an unattended first run).
+  2. Background service auto-start: start.ps1 now starts Ollama
+     ("<detected ollama> serve") and any service with a configured
+     services.*_start_command (Qwen/llama.cpp, OmniRoute, Arena bridge)
+     as hidden background processes, waits for a real health answer and
+     reports the result. Services that are already running are only
+     probed and never touched. Startup output is captured in
+     logs/service-<name>.out.log and .err.log; PIDs are recorded in
+     run/<name>.json.
+  3. Interactive console: the launcher now ends in
+     "python -m orchestrator.cli console" - a driftline> prompt
+     (help/doctor/report/status/submit/approve/init/quit) that routes
+     through the exact same argparse handlers as the non-interactive
+     CLI. Everything is driven from the one window.
+  4. stop.ps1 now also stops exactly the background services the
+     launcher recorded (process-tree stop), and nothing else.
+  5. New config section "services" (auto_start, health_wait_seconds,
+     ollama/qwen/omniroute/arena start commands) in config.py,
+     config.yaml and config.example.yaml, with validation.
+Fixed: offline tests no longer write data/orchestrator.db outside their
+  own tmp dirs (conftest anchors config.storage.database to the test
+  base dir).
+
+Earlier: v1.0.1 fixed .\start.ps1 -Doctor on a fresh extraction
+($Script:VenvPython used before Initialize-VirtualEnv ran).
 
 OFFLINE TEST SUITE
 ------------------
-tests=97 failures=0 errors=0 skipped=0 duration=53.870s
+tests=111 failures=0 errors=0 skipped=0 duration~55s
 
 Test modules:
   tests/test_arena.py: 11
-  tests/test_config.py: 8
+  tests/test_cli.py: 11            (new: console routing, parsing, exit,
+                                    submit planning via stub, dry-run gate)
+  tests/test_config.py: 11         (+3: services defaults, env override,
+                                    validation)
   tests/test_database.py: 7
   tests/test_dispatch_safety.py: 7
-  tests/test_packaging.py: 4
+  tests/test_packaging.py: 4       (+ run/ exclusion lock-in)
   tests/test_policy.py: 8
   tests/test_qwen.py: 9
   tests/test_state_machine.py: 7
@@ -35,22 +59,30 @@ protocols (MCP Streamable HTTP + stdio, Ollama /v1/systemone,
 OpenAI-compatible /v1/chat/completions). No test contacted a real
 Arena, Ollama, Qwen or OmniRoute instance.
 
-FRESH-INSTALL VERIFICATION (build host, no pre-existing .venv)
------------------------------------------------------------
-  1. Removed .venv; ran: pwsh -NoProfile -File ./start.ps1 -Doctor
-     -> created .venv, installed PyYAML 6.0.3 + httpx 0.28.1, ran the
-        report, exit code 0.
-  2. Re-ran with existing .venv -> reused it (no re-create), exit 0.
-  3. Ran with a fake ollama on PATH -> ollama was NOT invoked.
-  4. PowerShell 7.4.6 parser: start.ps1/stop.ps1/doctor.ps1/test.ps1 OK.
-  5. Extracted the v1.0.1 ZIP to a clean directory and re-ran the
-     full offline suite -> 97 passed.
+VERIFICATION NOTES (build environment has no Windows, no live AI services)
+-------------------------------------------------------------------------
+  1. Full offline suite ran green from the working tree, and the
+     repository root stayed free of data/ and logs/ afterwards.
+  2. start.ps1/stop.ps1/doctor.ps1/test.ps1 passed structural
+     verification (braces, parentheses, brackets, string quotes and
+     here-strings balanced). The PowerShell 7.4.6 parser check could
+     NOT run in this environment (no pwsh available); it remains to be
+     run on the Windows host:
+       pwsh -NoProfile -Command
+         '[System.Management.Automation.Language.Parser]::ParseFile(
+           ".\start.ps1", [ref]$null, [ref]$errs); $errs'
+  3. The embedded services-config bridge (venv Python reads the
+     services section of config/config.yaml and prints JSON) was
+     executed directly and produced the expected JSON payload.
+  4. The console was exercised end-to-end with piped input
+     (help/status/submit/quit): correct routing, and a submit without
+     a live Qwen is reported BLOCKED - nothing is faked.
 
 READINESS PROBE (build host has no live AI services)
 -----------------------------------------------------
   DRIFTLINE ORCHESTRATOR
   ======================
-  
+
   Python runtime           PASS
   Dependencies             PASS
   SQLite                   PASS
@@ -62,11 +94,16 @@ READINESS PROBE (build host has no live AI services)
   Arena task capability    UNVERIFIED
   Git repository           PASS
   Workflow                 IDLE
-  
+
   Errors:
-    - configured endpoint: McpTransportError: streamable HTTP request failed: [Errno 111] Connection refused
-    - transport streamable_http at configured endpoint could not be established: streamable HTTP request failed: [Errno 111] Connection refused
-    - ARENA_NOT_CONNECTED: no MCP transport could be established. The orchestrator will run in fallback mode and will not dispatch implementation tasks.
+    - configured endpoint: McpTransportError: streamable HTTP request
+      failed: [Errno 111] Connection refused
+    - transport streamable_http at configured endpoint could not be
+      established: streamable HTTP request failed: [Errno 111]
+      Connection refused
+    - ARENA_NOT_CONNECTED: no MCP transport could be established. The
+      orchestrator will run in fallback mode and will not dispatch
+      implementation tasks.
 
 ARENA INTEGRATION STATUS
 ------------------------
@@ -77,4 +114,5 @@ on the target machine run:  .\start.ps1 -Doctor
 
 HOW TO RUN ON WINDOWS
 ---------------------
-  .\start.ps1
+  Double-click play.cmd        (or .\start.ps1 from a terminal)
+  Stop everything:  .\stop.ps1

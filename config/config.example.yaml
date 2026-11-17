@@ -71,6 +71,14 @@ logging:
 storage:
   database: data/orchestrator.db
 
+services:
+  auto_start: true
+  health_wait_seconds: 60
+  ollama_start_command: ""
+  qwen_start_command: ""
+  omniroute_start_command: ""
+  arena_start_command: ""
+
 server:
   bind_host: 127.0.0.1
   port: 17870

@@ -74,6 +74,18 @@ logging:
 storage:
   database: data/orchestrator.db
 
+# Background services managed by start.ps1 / play.cmd so nothing needs a
+# separate terminal. A service whose start_command is empty is never started
+# automatically. Commands run hidden in the background and are stopped again
+# by .\stop.ps1 (only processes started here are ever stopped).
+services:
+  auto_start: true            # false = never start services, only probe them
+  health_wait_seconds: 60     # how long to wait for a started service to answer
+  ollama_start_command: ""    # empty = "<detected ollama> serve"
+  qwen_start_command: ""      # e.g. llama-server -m C:\models\qwen.gguf --port 8090
+  omniroute_start_command: ""
+  arena_start_command: ""
+
 server:
   bind_host: 127.0.0.1       # loopback only; never expose publicly
   port: 17870

@@ -29,7 +29,7 @@ from typing import Any, Dict, List, Optional, Sequence
 import httpx
 
 PROTOCOL_VERSION = "2025-03-26"
-CLIENT_INFO = {"name": "driftline-orchestrator", "version": "1.0.1"}
+CLIENT_INFO = {"name": "driftline-orchestrator", "version": "1.1.0"}
 
 
 class McpError(Exception):

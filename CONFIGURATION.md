@@ -116,6 +116,29 @@ The real tool names and schemas are discovered at runtime. See
 |---|---|
 | `database` | `data/orchestrator.db` |
 
+## services
+
+Background service management used by `play.cmd` / `start.ps1`, so nothing
+needs a separate terminal. A service whose `*_start_command` is empty is never
+started automatically. Services that are already running are only probed and
+left untouched. Commands run as hidden background processes with output in
+`logs/service-<name>.out.log` / `.err.log`; `.\stop.ps1` stops exactly the
+processes the launcher started (recorded in `run\`) and nothing else.
+
+| Key | Default | Notes |
+|---|---|---|
+| `auto_start` | `true` | `false` = probe only, never start anything |
+| `health_wait_seconds` | `60` | how long to wait for a started service to answer |
+| `ollama_start_command` | `\"\"` | empty = `<detected ollama> serve` |
+| `qwen_start_command` | `\"\"` | e.g. `llama-server -m C:\models\qwen.gguf --port 8090` |
+| `omniroute_start_command` | `\"\"` | optional |
+| `arena_start_command` | `\"\"` | your Arena bridge, if it should be launched too |
+
+The commands are plain Windows command lines; quote executables whose path
+contains spaces. Starting a service is always opt-in via these commands (or
+the Ollama default); the launcher never modifies, reconfigures or replaces an
+existing installation.
+
 ## server
 
 | Key | Default | Notes |

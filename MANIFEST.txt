@@ -37,6 +37,7 @@ orchestrator/verification/roblox_qa.py
 orchestrator/verification/tests.py
 orchestrator/workflow.py
 packaging/build_zip.py
+play.cmd
 pyproject.toml
 requirements-dev.txt
 requirements.txt
@@ -50,6 +51,7 @@ tests/stubs/http_servers.py
 tests/stubs/mcp_server.py
 tests/stubs/stdio_mcp_server.py
 tests/test_arena.py
+tests/test_cli.py
 tests/test_config.py
 tests/test_database.py
 tests/test_dispatch_safety.py

@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
+import shlex
 import sys
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .agents.arena import ArenaAdapter
 from .app import App, bootstrap
@@ -250,10 +253,105 @@ def cmd_idle(args: argparse.Namespace) -> int:
         report = build_readiness(app)
         print(report.render())
         print("\nSafe idle mode. No implementation task has been dispatched.")
-        print("Submit a goal with: python -m orchestrator.cli submit \"<goal>\"")
+        print('Submit a goal with: python -m orchestrator.cli submit "<goal>"')
+        print("Or run the interactive console: python -m orchestrator.cli console")
         return 0
     finally:
         app.close()
+
+
+# ---------------------------------------------------------------------------
+# Interactive console (everything from one window)
+# ---------------------------------------------------------------------------
+
+CONSOLE_COMMANDS = {
+    "doctor",
+    "report",
+    "status",
+    "submit",
+    "approve",
+    "init",
+}
+
+CONSOLE_HELP = """\
+Commands:
+  doctor                        probe every service and print a readiness report
+  report [--offline]            readiness report as JSON
+  status [--limit N]            show task status
+  submit "<goal>" [--context "<c>"] [--execute] [--dry-run]
+                                submit a development goal (planning only unless
+                                --execute and workflow.dry_run is false)
+  approve <approval-id> [--deny]
+                                resolve a pending approval
+  init [--force]                write config/config.yaml from defaults
+  help                          show this help
+  quit                          leave the console (Ctrl+D also works)"""
+
+
+class ConsoleSession:
+    """One interactive console session.
+
+    Lines are routed through the exact same argparse handlers as the
+    non-interactive CLI, so behaviour never diverges between the two. All
+    output is captured and returned, which keeps the console fully testable
+    offline without stdin/stdout games.
+    """
+
+    def __init__(self, base_dir: str | Path = ".") -> None:
+        self.base_dir = str(base_dir)
+
+    def execute(self, line: str) -> Tuple[str, bool]:
+        """Run one console line.
+
+        Returns ``(output, done)``; ``done`` is True when the session must end
+        (``quit`` / ``exit``).
+        """
+        line = (line or "").strip()
+        if not line:
+            return "", False
+        if line in {"quit", "exit"}:
+            return "", True
+        if line in {"help", "?"}:
+            return CONSOLE_HELP, False
+        try:
+            parts = shlex.split(line)
+        except ValueError as exc:
+            return f"could not parse command: {exc}\n{CONSOLE_HELP}", False
+        if parts[0] not in CONSOLE_COMMANDS:
+            return f"unknown command: {parts[0]}\n{CONSOLE_HELP}", False
+        buffer = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(buffer):
+                code = main(["--base-dir", self.base_dir, *parts])
+        except SystemExit:
+            buffer.write("usage error; type 'help' for commands\n")
+        except Exception as exc:  # noqa: BLE001
+            buffer.write(f"error: {type(exc).__name__}: {redact(str(exc))}\n")
+        else:
+            if code:
+                buffer.write(f"(exit code {code})\n")
+        return buffer.getvalue(), False
+
+
+def cmd_console(args: argparse.Namespace) -> int:
+    session = ConsoleSession(base_dir=args.base_dir)
+    print(f"{BANNER} - console")
+    print("Everything runs from this window. Type 'help' for commands, 'quit' to leave.")
+    while True:
+        try:
+            line = input("driftline> ")
+        except EOFError:
+            print()
+            break
+        except KeyboardInterrupt:
+            print()
+            continue
+        output, done = session.execute(line)
+        if output:
+            print(output, end="" if output.endswith("\n") else "\n")
+        if done:
+            break
+    return 0
 
 
 def cmd_approve(args: argparse.Namespace) -> int:
@@ -297,6 +395,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_submit.add_argument("--execute", action="store_true")
     p_submit.add_argument("--dry-run", action="store_true")
     sub.add_parser("idle", help="safe idle mode (no dispatch)")
+    sub.add_parser(
+        "console",
+        help="interactive console: drive everything from one window",
+    )
     p_approve = sub.add_parser("approve", help="resolve a pending approval")
     p_approve.add_argument("approval_id")
     p_approve.add_argument("--deny", action="store_true")
@@ -314,6 +416,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "status": cmd_status,
         "submit": cmd_submit,
         "idle": cmd_idle,
+        "console": cmd_console,
         "approve": cmd_approve,
         "init": cmd_init,
     }

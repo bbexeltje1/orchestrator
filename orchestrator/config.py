@@ -93,6 +93,14 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "storage": {
         "database": "data/orchestrator.db",
     },
+    "services": {
+        "auto_start": True,
+        "health_wait_seconds": 60,
+        "ollama_start_command": "",
+        "qwen_start_command": "",
+        "omniroute_start_command": "",
+        "arena_start_command": "",
+    },
     "server": {
         "bind_host": "127.0.0.1",
         "port": 17870,
@@ -191,6 +199,24 @@ class StorageConfig:
 
 
 @dataclass
+class ServicesConfig:
+    """Background service management used by the one-command launcher.
+
+    The launcher (start.ps1) reads this section to decide whether it may start
+    local services itself, so nothing needs a separate terminal. Python never
+    starts services directly; commands stay explicit and user-controlled. An
+    empty start command means "never auto-start this service".
+    """
+
+    auto_start: bool = True
+    health_wait_seconds: int = 60
+    ollama_start_command: str = ""
+    qwen_start_command: str = ""
+    omniroute_start_command: str = ""
+    arena_start_command: str = ""
+
+
+@dataclass
 class ServerConfig:
     bind_host: str = "127.0.0.1"
     port: int = 17870
@@ -208,6 +234,7 @@ class Config:
     verification: VerificationConfig = field(default_factory=VerificationConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
+    services: ServicesConfig = field(default_factory=ServicesConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -221,6 +248,7 @@ class Config:
             "verification": self.verification.__dict__,
             "logging": self.logging.__dict__,
             "storage": self.storage.__dict__,
+            "services": self.services.__dict__,
             "server": self.server.__dict__,
         }
 
@@ -235,6 +263,7 @@ _SECTION_DTYPES = {
     "verification": VerificationConfig,
     "logging": LoggingConfig,
     "storage": StorageConfig,
+    "services": ServicesConfig,
     "server": ServerConfig,
 }
 
@@ -401,6 +430,9 @@ def validate_config(cfg: Config) -> None:
         problems.append("workflow.max_retries must be >= 0")
     if cfg.workflow.autonomy not in {"hybrid", "manual", "autonomous"}:
         problems.append("workflow.autonomy must be one of hybrid|manual|autonomous")
+
+    if cfg.services.health_wait_seconds < 1 or cfg.services.health_wait_seconds > 900:
+        problems.append("services.health_wait_seconds must be between 1 and 900")
 
     if cfg.server.bind_host not in {"127.0.0.1", "localhost", "::1"}:
         problems.append(

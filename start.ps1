@@ -1,6 +1,10 @@
 # DRIFTLINE Orchestrator - one-command Windows installer and launcher.
 #
-#   .\start.ps1                     install, test, launch safe idle mode
+#   .\play.cmd                      double-click "press play": install
+#                                   everything, start every needed service in
+#                                   the background, open the console. No
+#                                   separate terminals are required.
+#   .\start.ps1                     same as play.cmd, for a terminal
 #   .\start.ps1 -Doctor             probe every service
 #   .\start.ps1 -Test                run the offline + integration test suite
 #   .\start.ps1 -SkipModelDownload  never download the THX-02 model
@@ -8,6 +12,8 @@
 #
 # Everything is user-local where possible. No administrator privileges are
 # required, and nothing is executed from a download without a signature check.
+# Background services started here are recorded under run\ and stopped again
+# with .\stop.ps1; services that are already running are probed, never touched.
 
 #requires -Version 5.1
 [CmdletBinding()]
@@ -22,7 +28,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$Script:AppVersion = '1.0.1'
+$Script:AppVersion = '1.1.0'
 $Script:Root = $PSScriptRoot
 if (-not $Script:Root) { $Script:Root = (Get-Location).Path }
 Set-Location -Path $Script:Root
@@ -31,8 +37,17 @@ $Script:PythonSpec = '3.12'
 $Script:OllamaUrl = 'https://ollama.com/download/OllamaSetup.exe'
 $Script:ThxModel = 'HAL-X/thx-02:q4_k_m'
 $Script:VenvDir = Join-Path $Script:Root '.venv'
+$Script:RunDir = Join-Path $Script:Root 'run'
+$Script:LogDir = Join-Path $Script:Root 'logs'
 $Script:Report = [ordered]@{}
 $Script:Errors = New-Object System.Collections.ArrayList
+$Script:ServicesConfig = $null
+
+# Service endpoints (probed with a real request, never a bare TCP connect).
+$Script:OllamaApiUrl = 'http://127.0.0.1:11434/api/version'
+$Script:QwenUrl = 'http://127.0.0.1:8090/v1/models'
+$Script:OmniRouteUrl = 'http://127.0.0.1:20128/health'
+$Script:ArenaUrl = 'http://127.0.0.1:17864/mcp'
 
 # ---------------------------------------------------------------------------
 # Output helpers
@@ -291,11 +306,184 @@ function Install-ThxModel {
 }
 
 # ---------------------------------------------------------------------------
+# Background service management (no separate terminals)
+#
+# start.ps1 can run the services itself as hidden background processes. Only
+# processes started here are recorded (run\<name>.json) and only those are
+# ever stopped again by stop.ps1. Services that are already running are only
+# probed. Nothing is modified, reconfigured or replaced.
+# ---------------------------------------------------------------------------
+
+function Test-HttpHealth {
+    param(
+        [string]$Url,
+        [string]$Method = 'GET',
+        [string]$Body,
+        [string]$ContentType,
+        [hashtable]$Headers
+    )
+    try {
+        $params = @{ Uri = $Url; UseBasicParsing = $true; TimeoutSec = 5 }
+        if ($Method -ne 'GET') { $params.Method = $Method }
+        if ($Body) { $params.Body = $Body }
+        if ($ContentType) { $params.ContentType = $ContentType }
+        if ($Headers) { $params.Headers = $Headers }
+        $response = Invoke-WebRequest @params
+        return ($response.StatusCode -ge 200 -and $response.StatusCode -lt 500)
+    }
+    catch {
+        return $false
+    }
+}
+
+function Invoke-ArenaBridgeProbe {
+    $body = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"driftline-start","version":"1.1.0"}}}'
+    return Test-HttpHealth -Url $Script:ArenaUrl -Method 'Post' -Body $body `
+        -ContentType 'application/json' -Headers @{ Accept = 'application/json, text/event-stream' }
+}
+
+function Get-ServicesConfig {
+    # Reads the services section of config/config.yaml via the venv Python
+    # (PyYAML), so no YAML parsing is duplicated here in PowerShell.
+    $defaults = [ordered]@{
+        auto_start             = $true
+        health_wait_seconds    = 60
+        ollama_start_command   = ''
+        qwen_start_command     = ''
+        omniroute_start_command = ''
+        arena_start_command    = ''
+    }
+    try {
+        $code = @'
+import json, os, pathlib, yaml
+p = pathlib.Path(os.environ["DRIFTLINE_CONFIG_ROOT"]) / "config" / "config.yaml"
+data = yaml.safe_load(p.read_text(encoding="utf-8")) if p.exists() else {}
+print(json.dumps((data or {}).get("services") or {}))
+'@
+        $env:DRIFTLINE_CONFIG_ROOT = $Script:Root
+        try {
+            $raw = & $Script:VenvPython -c $code
+        }
+        finally {
+            Remove-Item Env:DRIFTLINE_CONFIG_ROOT -ErrorAction SilentlyContinue
+        }
+        if ($LASTEXITCODE -eq 0 -and $raw) {
+            $parsed = $raw | ConvertFrom-Json
+            foreach ($key in @($defaults.Keys)) {
+                $prop = $parsed.PSObject.Properties[[string]$key]
+                if ($prop -and $null -ne $prop.Value) { $defaults[$key] = $prop.Value }
+            }
+        }
+    }
+    catch {
+        Add-Error "Could not read the services section of config/config.yaml: $($_.Exception.Message)"
+    }
+    return $defaults
+}
+
+function Get-ServiceRecord($Name) {
+    $path = Join-Path $Script:RunDir "$Name.json"
+    if (-not (Test-Path $path)) { return $null }
+    try { return (Get-Content $path -Raw | ConvertFrom-Json) }
+    catch { return $null }
+}
+
+function Save-ServiceRecord($Name, $ProcessId, $Command) {
+    if (-not (Test-Path $Script:RunDir)) { New-Item -ItemType Directory -Path $Script:RunDir | Out-Null }
+    $record = [ordered]@{
+        name       = $Name
+        pid        = $ProcessId
+        command    = $Command
+        started_at = (Get-Date).ToString('o')
+    }
+    $record | ConvertTo-Json | Set-Content -Path (Join-Path $Script:RunDir "$Name.json") -Encoding UTF8
+}
+
+function Clear-ServiceRecord($Name) {
+    Remove-Item (Join-Path $Script:RunDir "$Name.json") -ErrorAction SilentlyContinue
+}
+
+function Test-RecordAlive($Record) {
+    if (-not $Record) { return $false }
+    $pidProp = $Record.PSObject.Properties['pid']
+    if (-not $pidProp) { return $false }
+    return [bool](Get-Process -Id $pidProp.Value -ErrorAction SilentlyContinue)
+}
+
+function Start-ManagedService {
+    # Start one service in the background (hidden window, logged output) if it
+    # is not already answering. Returns $true when the service is healthy.
+    param(
+        [string]$Name,
+        [string]$DisplayName,
+        [string]$Command,
+        [scriptblock]$Probe,
+        [string]$Hint = ''
+    )
+    if (-not $Command) {
+        Write-Status $DisplayName 'SKIPPED' 'no start command configured'
+        if ($Hint) { Write-Host "  $Hint" -ForegroundColor DarkGray }
+        return $false
+    }
+    if (& $Probe) {
+        Write-Status $DisplayName 'PASS' 'already running (left untouched)'
+        return $true
+    }
+
+    $record = Get-ServiceRecord $Name
+    if (Test-RecordAlive $record) {
+        Write-Host "  $DisplayName was started by this launcher earlier (PID $($record.pid)); waiting for it to answer..." -ForegroundColor Cyan
+    }
+    else {
+        if ($record) { Clear-ServiceRecord $Name }
+        if (-not (Test-Path $Script:LogDir)) { New-Item -ItemType Directory -Path $Script:LogDir | Out-Null }
+        $outLog = Join-Path $Script:LogDir "service-$Name.out.log"
+        $errLog = Join-Path $Script:LogDir "service-$Name.err.log"
+        Remove-Item $outLog, $errLog -ErrorAction SilentlyContinue
+        Write-Host "  Starting $DisplayName in the background: $Command" -ForegroundColor Cyan
+        try {
+            $process = Start-Process -FilePath $env:ComSpec -ArgumentList "/c $Command" `
+                -WindowStyle Hidden -PassThru `
+                -RedirectStandardOutput $outLog -RedirectStandardError $errLog
+        }
+        catch {
+            Add-Error "Failed to start ${DisplayName}: $($_.Exception.Message)"
+            Write-Status $DisplayName 'BLOCKED' 'failed to start'
+            return $false
+        }
+        Save-ServiceRecord $Name $process.Id $Command
+        $record = Get-ServiceRecord $Name
+    }
+
+    $wait = 60
+    if ($Script:ServicesConfig -and $Script:ServicesConfig.health_wait_seconds) {
+        $wait = [int]$Script:ServicesConfig.health_wait_seconds
+    }
+    $deadline = (Get-Date).AddSeconds($wait)
+    while ((Get-Date) -lt $deadline) {
+        if (& $Probe) {
+            Write-Status $DisplayName 'PASS' "healthy in the background (PID $($record.pid))"
+            return $true
+        }
+        if (-not (Test-RecordAlive $record)) {
+            Write-Status $DisplayName 'BLOCKED' 'process exited during startup'
+            Add-Error "$DisplayName exited during startup. See logs\service-$Name.err.log"
+            Clear-ServiceRecord $Name
+            return $false
+        }
+        Start-Sleep -Seconds 2
+    }
+    Write-Status $DisplayName 'BLOCKED' "did not answer within ${wait}s"
+    Add-Error "$DisplayName did not become healthy. See logs\service-$Name.err.log"
+    return $false
+}
+
+# ---------------------------------------------------------------------------
 # Service probes (the Python orchestrator owns the real probes)
 # ---------------------------------------------------------------------------
 
 function Test-Qwen {
-    $url = 'http://127.0.0.1:8090/v1/models'
+    $url = $Script:QwenUrl
     try {
         $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 8
         Write-Status 'Qwen local' 'PASS' "HTTP $($response.StatusCode) at $url"
@@ -303,14 +491,15 @@ function Test-Qwen {
     }
     catch {
         Write-Status 'Qwen local' 'BLOCKED' "$url unreachable"
-        Add-Error 'Start your existing llama.cpp Qwen server on 127.0.0.1:8090. ' +
-                  'The existing installation is left untouched.'
+        Add-Error 'Your llama.cpp Qwen server is not answering on 127.0.0.1:8090. ' +
+                  'Set services.qwen_start_command in config\config.yaml and start.ps1 will run it for you. ' +
+                  'Your existing installation is never modified.'
         return $false
     }
 }
 
 function Test-OmniRoute {
-    $url = 'http://127.0.0.1:20128/health'
+    $url = $Script:OmniRouteUrl
     try {
         $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 8
         Write-Status 'OmniRoute' 'PASS' "HTTP $($response.StatusCode) at $url"
@@ -323,18 +512,14 @@ function Test-OmniRoute {
 }
 
 function Test-ArenaBridge {
-    $url = 'http://127.0.0.1:17864/mcp'
-    try {
-        $body = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"driftline-start","version":"1.0.1"}}}'
-        $response = Invoke-WebRequest -Uri $url -Method Post -Body $body -ContentType 'application/json' -Headers @{ Accept = 'application/json, text/event-stream' } -UseBasicParsing -TimeoutSec 8
-        Write-Status 'Arena bridge' 'PASS' "HTTP $($response.StatusCode) at $url"
+    $url = $Script:ArenaUrl
+    if (Invoke-ArenaBridgeProbe) {
+        Write-Status 'Arena bridge' 'PASS' "answered an MCP initialize request at $url"
         return $true
     }
-    catch {
-        Write-Status 'Arena bridge' 'BLOCKED' "$url did not answer an MCP initialize request"
-        Add-Error 'The adapter will report ARENA_NOT_CONNECTED and will not dispatch tasks.'
-        return $false
-    }
+    Write-Status 'Arena bridge' 'BLOCKED' "$url did not answer an MCP initialize request"
+    Add-Error 'The adapter will report ARENA_NOT_CONNECTED and will not dispatch tasks.'
+    return $false
 }
 
 # ---------------------------------------------------------------------------
@@ -396,11 +581,15 @@ function Show-ReadinessReport {
     & $Script:VenvPython -m orchestrator.cli doctor
 }
 
-function Start-IdleMode {
+function Start-Console {
     Write-Host ''
-    Write-Host 'Launching the orchestrator in safe idle mode...' -ForegroundColor Green
+    Write-Host 'Everything is up. Launching the orchestrator console.' -ForegroundColor Green
+    Write-Host 'Type help for commands, quit to leave. This one window does everything.' -ForegroundColor Green
     $env:PYTHONPATH = $Script:Root
-    & $Script:VenvPython -m orchestrator.cli idle
+    & $Script:VenvPython -m orchestrator.cli console
+    Write-Host ''
+    Write-Host 'Console closed. Background services started by this launcher keep running.' -ForegroundColor Cyan
+    Write-Host 'Stop everything with: .\stop.ps1' -ForegroundColor Cyan
 }
 
 try {
@@ -409,7 +598,8 @@ try {
     if ($Doctor) {
         # Diagnostics must work on a fresh extraction: provision the runtime
         # and dependencies first, then run the report. No Ollama install, no
-        # model download, no Arena dispatch and no idle mode happen here.
+        # model download, no service startup, no Arena dispatch and no console
+        # launch happen here.
         Test-Windows
         if (-not (Test-Internet)) { exit 1 }
         Initialize-VirtualEnv
@@ -424,6 +614,8 @@ try {
     Initialize-VirtualEnv
     Install-Dependencies
     Test-Git
+    Initialize-Config
+    $Script:ServicesConfig = Get-ServicesConfig
 
     $ollama = Get-OllamaPath
     if (-not $ollama) {
@@ -433,22 +625,59 @@ try {
     if ($ollama) {
         if (Test-OllamaSignature $ollama) {
             Write-Status 'Ollama' 'PASS' $ollama
+            $ollamaServing = $false
+            if ($Script:ServicesConfig.auto_start) {
+                # Ollama is managed by this launcher: default command is
+                # "<ollama> serve"; services.ollama_start_command overrides it.
+                $serveCommand = [string]$Script:ServicesConfig.ollama_start_command
+                if (-not $serveCommand) { $serveCommand = '"' + $ollama + '" serve' }
+                $ollamaServing = Start-ManagedService -Name 'ollama' -DisplayName 'Ollama service' `
+                    -Command $serveCommand `
+                    -Probe { Test-HttpHealth -Url $Script:OllamaApiUrl }
+            }
+            else {
+                $ollamaServing = Test-HttpHealth -Url $Script:OllamaApiUrl
+            }
+            if ($ollamaServing) {
+                Install-ThxModel
+            }
+            else {
+                Add-Error 'Ollama is installed but not serving; THX-02 model handling is skipped (fallback mode).'
+            }
         }
         else {
             Write-Status 'Ollama' 'FAIL' 'signature verification failed'
             Add-Error 'The Ollama executable is not correctly signed. Not using it.'
         }
-        Install-ThxModel
     }
     else {
         Write-Status 'Ollama' 'BLOCKED' 'not installed'
         Add-Error 'Ollama is missing; THX-02 is unavailable. The system runs in fallback mode.'
     }
 
+    if ($Script:ServicesConfig.auto_start) {
+        Start-ManagedService -Name 'qwen' -DisplayName 'Qwen service' `
+            -Command ([string]$Script:ServicesConfig.qwen_start_command) `
+            -Probe { Test-HttpHealth -Url $Script:QwenUrl } `
+            -Hint 'Set services.qwen_start_command in config\config.yaml (e.g. llama-server -m C:\models\qwen.gguf --port 8090) and this launcher will run it for you.' | Out-Null
+
+        Start-ManagedService -Name 'omniroute' -DisplayName 'OmniRoute service' `
+            -Command ([string]$Script:ServicesConfig.omniroute_start_command) `
+            -Probe { Test-HttpHealth -Url $Script:OmniRouteUrl } `
+            -Hint 'Optional. Set services.omniroute_start_command in config\config.yaml to auto-start OmniRoute.' | Out-Null
+
+        Start-ManagedService -Name 'arena' -DisplayName 'Arena bridge service' `
+            -Command ([string]$Script:ServicesConfig.arena_start_command) `
+            -Probe { Invoke-ArenaBridgeProbe } `
+            -Hint 'Set services.arena_start_command in config\config.yaml to auto-start your Arena bridge.' | Out-Null
+    }
+    else {
+        Write-Host '  services.auto_start is false: services are probed but never started.' -ForegroundColor DarkGray
+    }
+
     Test-Qwen
     Test-OmniRoute
     Test-ArenaBridge
-    Initialize-Config
 
     $offline = Invoke-OfflineTests
     if ($offline -ne 0) {
@@ -472,10 +701,10 @@ try {
 
     if ($Script:Errors.Count -gt 0) {
         Write-Host ''
-        Write-Host 'Some services are not ready. The orchestrator will still start in safe idle mode.' -ForegroundColor Yellow
+        Write-Host 'Some services are not ready. The console still starts; blocked features degrade safely.' -ForegroundColor Yellow
     }
 
-    Start-IdleMode
+    Start-Console
     exit 0
 }
 catch {

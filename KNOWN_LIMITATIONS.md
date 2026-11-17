@@ -73,7 +73,10 @@ mode.
 `/v1/chat/completions`. Model id is discovered, never assumed.
 
 **UNVERIFIED** against your llama.cpp server until probed. Your existing
-llama.cpp installation and model are never modified, restarted or replaced.
+llama.cpp installation and model are never modified, reconfigured or replaced,
+and a running server is never touched. The launcher can start a *stopped*
+server for you — only when you set `services.qwen_start_command`, only in the
+background, and `.\stop.ps1` stops it again.
 
 ## 4. OmniRoute
 
@@ -105,5 +108,5 @@ path you provide.
 Offline tests cover persistence, transitions, duplicate protection, timeout
 reconciliation, restart recovery, THX validation, Qwen parsing, MCP schema
 discovery, policy, approvals and packaging exclusions. All external services
-are stubs; no test contacts a real Arena instance. See `dist/TEST-REPORT.txt`
+are stubs; no test contacts a real Arena instance. See `TEST-REPORT.txt`
 for the exact results.

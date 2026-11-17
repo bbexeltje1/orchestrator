@@ -12,6 +12,7 @@ __pycache__/
 # Runtime state
 data/
 logs/
+run/
 *.db
 *.db-wal
 *.db-shm

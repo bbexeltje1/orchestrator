@@ -73,3 +73,24 @@ def test_secret_resolution_uses_env_only(base_dir):
     config = load_config(base_dir=base_dir)
     assert resolve_secret(config, env={"ARENA_BRIDGE_TOKEN": "secret"}) == "secret"
     assert resolve_secret(config, env={}) is None
+
+
+def test_services_section_defaults(base_dir):
+    config = load_config(base_dir=base_dir)
+    assert config.services.auto_start is True
+    assert config.services.health_wait_seconds == 60
+    assert config.services.qwen_start_command == ""
+    assert config.services.ollama_start_command == ""
+
+
+def test_services_env_override(base_dir):
+    env = {"DRIFTLINE_SERVICES_QWEN_START_COMMAND": "llama-server -m q.gguf --port 8090"}
+    config = load_config(base_dir=base_dir, env=env)
+    assert config.services.qwen_start_command.startswith("llama-server")
+
+
+def test_services_bad_wait_rejected(base_dir):
+    config = load_config(base_dir=base_dir)
+    config.services.health_wait_seconds = 0
+    with pytest.raises(ConfigError):
+        validate_config(config)

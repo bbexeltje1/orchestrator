@@ -33,9 +33,11 @@ EXCLUDE_DIR_NAMES = {
     "node_modules",
     "data",
     "logs",
+    "run",
     "dist",
     "build",
     "coverage",
+    "release",
     ".arena",
 }
 
@@ -59,6 +61,7 @@ EXCLUDE_FILE_NAMES = {".env", ".DS_Store", "Thumbs.db"}
 
 REQUIRED_ENTRIES = [
     "TEST-REPORT.txt",
+    "play.cmd",
     "start.ps1",
     "stop.ps1",
     "doctor.ps1",
@@ -87,6 +90,7 @@ REQUIRED_ENTRIES = [
     "orchestrator/verification/tests.py",
     "orchestrator/verification/roblox_qa.py",
     "tests/test_arena.py",
+    "tests/test_cli.py",
     "tests/test_task_manager.py",
     "tests/test_policy.py",
     "packaging/build_zip.py",
@@ -158,6 +162,7 @@ def verify(artifact: Path) -> list[str]:
         ".git/",
         "data/",
         "logs/",
+        "run/",
         ".db",
         ".gguf",
         ".exe",

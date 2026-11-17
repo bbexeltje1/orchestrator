@@ -25,7 +25,7 @@ change goes through `TaskManager` and every risky operation through `Policy`.
 
 | Module | Responsibility |
 |---|---|
-| `orchestrator/cli.py` | Commands: `doctor`, `report`, `status`, `submit`, `idle`, `approve`, `init` |
+| `orchestrator/cli.py` | Commands: `doctor`, `report`, `status`, `submit`, `idle`, `approve`, `init`, `console` (interactive, single-window session) |
 | `orchestrator/app.py` | Bootstrap/wiring of config, storage, engines, adapters |
 | `orchestrator/config.py` | YAML + `.env` + environment config, validation, secret resolution |
 | `orchestrator/models.py` | Enums (`TaskStatus`, `Decision`, `ServiceHealth`), `Task`, validation, redaction |

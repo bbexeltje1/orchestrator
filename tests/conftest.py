@@ -36,7 +36,11 @@ def base_dir(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def config(base_dir: Path):
-    return load_config(base_dir=base_dir)
+    cfg = load_config(base_dir=base_dir)
+    # Keep runtime state inside the test's tmp dir: callers that open the
+    # database by config path must never write into the repository root.
+    cfg.storage.database = str(base_dir / cfg.storage.database)
+    return cfg
 
 
 @pytest.fixture
