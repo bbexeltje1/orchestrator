@@ -112,6 +112,19 @@ GIT_DENIED_SUBCOMMANDS = {
 _UNSAFE_SHELL = re.compile(r"[;&|`$><\n\r]")
 
 
+def _command_base(exe: str) -> str:
+    """Lowercase executable name without directory or Windows shim suffix.
+
+    ``python.exe`` and ``python`` are the same program; so are ``claude.cmd``
+    (an npm shim) and ``claude.exe``. Comparisons use the canonical name.
+    """
+    base = str(exe).replace("\\", "/").rsplit("/", 1)[-1].lower()
+    for suffix in (".exe", ".cmd", ".bat"):
+        if base.endswith(suffix):
+            return base[: -len(suffix)]
+    return base
+
+
 @dataclass
 class PolicyDecision:
     effect: Effect
@@ -220,7 +233,7 @@ class Policy:
         if not isinstance(argv, (list, tuple)):
             return False, "command must be an argv list, not a shell string"
         exe = str(argv[0])
-        base = exe.replace("\\", "/").rsplit("/", 1)[-1].lower()
+        base = _command_base(exe)
         allowed_names = {
             "git", "python", "python3", "pytest", "rojo", "rojo.exe",
             "luau-analyze", "selene", "ollama", "ollama.exe",
@@ -258,14 +271,21 @@ class Policy:
         """
         if not argv or not isinstance(argv, (list, tuple)):
             return False, "empty command"
-        exe = str(argv[0])
-        base = exe.replace("\\", "/").rsplit("/", 1)[-1].lower()
-        if base not in {"claude", "claude.exe"}:
+        args = [str(a) for a in argv]
+        exe = args[0]
+        base = _command_base(exe)
+        if base in {"cmd", "command"} and len(args) >= 3 and args[1].lower() == "/c":
+            # Windows script-shim wrapper (cmd.exe /c claude.cmd ...): the
+            # real executable is the next element.
+            exe = args[2]
+            base = _command_base(exe)
+            args = [exe] + args[3:]
+        if base != "claude":
             return False, f"executable {base!r} is not an approved coding-agent CLI"
-        for idx, token in enumerate(argv[1:], start=1):
-            if idx == prompt_at or (prompt_at == -1 and idx == len(argv) - 1):
+        for idx, token in enumerate(args[1:], start=1):
+            if idx == prompt_at or (prompt_at == -1 and idx == len(args) - 1):
                 continue  # task text (single argv element; subprocess has no shell)
-            if _UNSAFE_SHELL.search(str(token)):
+            if _UNSAFE_SHELL.search(token):
                 return False, f"unsafe shell metacharacter in argument {token!r}"
         return True, ""
 

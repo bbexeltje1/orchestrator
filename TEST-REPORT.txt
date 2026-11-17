@@ -1,6 +1,73 @@
-DRIFTLINE ORCHESTRATOR v1.1.5 - TEST REPORT
+DRIFTLINE ORCHESTRATOR v1.1.6 - TEST REPORT
 Generated (UTC): 2026-11-17
 Interpreter: 3.11.2 (build environment; target runtime is Windows Python 3.12)
+
+CHANGE IN v1.1.6 (make real Claude Code execution work on Windows)
+------------------------------------------------------------------
+Field run (v1.1.5, Windows 10) reported: Claude installed PASS, authenticated
+UNVERIFIED, execution BLOCKED, and 3 test failures. Audit of the real source
+identified four root causes:
+
+1. POLICY ALLOWLIST REJECTED WINDOWS EXECUTABLE NAMES.
+   validate_command compared raw basenames, so "python.exe" was not the
+   allowlisted "python". The acceptance test's independent verification step
+   runs [sys.executable, "-m", "pytest", ...] - refused on every Windows
+   machine -> test_claude_acceptance_command_runs_full_loop printed
+   ACCEPTANCE: FAIL even when the agent succeeded. This would also have
+   blocked the REAL acceptance's pytest step. Fixed: canonical base names
+   (.exe/.cmd/.bat suffixes normalised; "python.exe" == "python").
+
+2. PROBE NEVER REACHED A VERDICT ON WINDOWS (the UNVERIFIED/BLOCKED trio).
+   Windows npm installs resolve "claude" to claude.cmd (a script shim);
+   validate_agent_command only allowed claude/claude.exe -> the probe was
+   refused before it ran ("probe command refused by policy"), and CreateProcess
+   cannot execute a .cmd directly. Fixed: shims run via "cmd.exe /c <shim> ..."
+   (still argv-only, never a shell string) and the policy accepts and unwraps
+   that form; base-name normalisation covers claude.cmd/claude.exe alike.
+
+3. "installed PASS" COULD MEAN "found but not runnable".
+   detect() set installed=True before proving --version works. Fixed:
+   installed=True only after '--version' actually succeeded; a found-but-broken
+   CLI is reported BLOCKED with the real error.
+
+4. ROBUST OUTPUT HANDLING. All CLI calls now read output as UTF-8 with
+   errors="replace" (Windows console codepages used to risk UnicodeDecodeError
+   -> probe "could not run") and run with stdin=DEVNULL (no accidental reads).
+
+Plus: test_readiness_reports_claude_rows_and_never_fakes_ready asserted the
+CLI was ABSENT (env-dependent) - it now simulates absence deterministically,
+and a sibling test covers the CLI-present case (installed PASS, execution
+never PASS without a real probe). Auth classification extended to the real
+CLI's message family ("Not logged in - Please run /login") with usage-limit
+and credit-balance texts.
+
+REAL-CLI VERIFICATION (performed here, Linux build environment):
+  The real Claude Code CLI 2.1.326 was installed from npm and invoked through
+  the actual executor code. Verified for real: --version detection; probe
+  invocation with --output-format json -p; JSON error-envelope parsing;
+  run_task capturing exit code 1, is_error=true, result text
+  "Not logged in - Please run /login", session id and the full log file;
+  classification = INSTALLED_NOT_AUTHENTICATED with correct guidance.
+  NOT claimed: Windows execution and an authenticated task run - this
+  environment has no Windows and no Claude subscription. The proof of the
+  DEFINITION OF DONE must come from the Windows acceptance run below.
+
+TESTS: 149/149 offline (118 + 31 claude/policy tests incl. regressions for
+python.exe allowlist, claude.cmd shim wrapping, cmd /c policy unwrap, the
+captured real login message, UTF-8/stdin runner options).
+
+WINDOWS ACCEPTANCE (v1.1.6):
+  cd C:\Users\MB\DRIFTLINE
+  git pull
+  .\play.cmd -SkipModelDownload
+  driftline> doctor
+  driftline> claude-acceptance
+  Expect: Claude Code installed PASS; if authenticated shows FAIL run
+  "claude login" once and re-run doctor; then ACCEPTANCE: PASS with agent
+  exit 0, test_greeting.py CREATED, pytest passed, full log under logs\ and
+  artifacts under run\claude-acceptance-<ts>\.
+
+CHANGE IN v1.1.5 (Claude Code integration: audit + executor + readiness)
 
 CHANGE IN v1.1.5 (Claude Code integration: audit + executor + readiness)
 ------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-# DRIFTLINE Orchestrator v1.1.5
+# DRIFTLINE Orchestrator v1.1.6
 
 A locally running, hybrid-autonomy development orchestrator for the **DRIFTLINE**
 Roblox project. Python owns the workflow. Qwen reasons. THX-02 routes. **Claude
@@ -195,6 +195,6 @@ See `ARCHITECTURE.md` for the module-by-module design and
 
 ## Deliverable
 
-`release/DRIFTLINE-Orchestrator-v1.1.4.zip` plus `release/SHA256SUMS.txt`,
+`release/DRIFTLINE-Orchestrator-v1.1.6.zip` plus `release/SHA256SUMS.txt`,
 `release/MANIFEST.txt` and `release/TEST-REPORT.txt`. See
 `packaging/build_zip.py` for the exact exclusion rules.

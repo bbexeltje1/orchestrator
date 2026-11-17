@@ -45,12 +45,26 @@ INSTALLED_NOT_AUTHENTICATED = "INSTALLED_NOT_AUTHENTICATED"
 EXECUTION_VERIFIED = "EXECUTION_VERIFIED"
 
 # Failure text that indicates missing/expired CLI login (subscription auth).
+# Ground truth (real CLI 2.x, unauthenticated): "Not logged in · Please run /login".
 _AUTH_ERROR_PATTERNS = re.compile(
-    r"(not logged in|log[\s_-]?in (is )?required|please (run |use )?`?claude (auth )?log"
-    r"|authentication (required|failed|error)|unauthorized|invalid api key"
-    r"|oauth|credential|login required|logged out|subscription)",
+    r"(not logged in|not authenticated|log[\s_-]?in (is )?required|login required"
+    r"|please (run |use )?`?(claude )?(auth )?/?log"
+    r"|/login|please log ?in|sign ?in"
+    r"|authentication (required|failed|error)|unauthorized|invalid api key|no api key"
+    r"|oauth|credential|logged out|subscription|usage limit|credit balance)",
     re.IGNORECASE,
 )
+
+# Shared subprocess options: UTF-8 regardless of the Windows console codepage,
+# no accidental stdin reads, no shell.
+_RUN_KW = {
+    "capture_output": True,
+    "text": True,
+    "encoding": "utf-8",
+    "errors": "replace",
+    "stdin": subprocess.DEVNULL,
+    "shell": False,
+}
 
 _PROBE_PROMPT = "Reply with exactly the single word OK."
 
@@ -147,6 +161,19 @@ class ClaudeCodeExecutor:
 
     # -- detection --------------------------------------------------------
 
+    @staticmethod
+    def _invocation(exe: str, args: List[str]) -> List[str]:
+        """Build the argv for one CLI call.
+
+        Windows npm installs provide ``claude.cmd`` script shims, which must
+        run through ``cmd.exe /c`` (CreateProcess cannot execute a batch file
+        directly). Real executables run as-is. No shell string is ever used.
+        """
+        if exe.lower().endswith((".cmd", ".bat")):
+            comspec = os.environ.get("COMSPEC") or "cmd.exe"
+            return [comspec, "/c", exe, *args]
+        return [exe, *args]
+
     def resolve(self) -> Optional[str]:
         """Locate the CLI. Never executes anything beyond --version."""
         command = (self.config.command or "").strip()
@@ -173,27 +200,26 @@ class ClaudeCodeExecutor:
             )
             cap.errors.append(cap.probe_detail)
             return cap
-        cap.installed = True
         cap.executable = exe
         try:
-            proc = self.runner(
-                [exe, "--version"],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                shell=False,
-            )
-            first_line = (proc.stdout or "").strip().splitlines()
-            cap.version = first_line[0] if first_line else ""
-            if proc.returncode != 0:
-                cap.errors.append(f"'--version' exited {proc.returncode}")
+            proc = self.runner(self._invocation(exe, ["--version"]), timeout=30, **_RUN_KW)
         except Exception as exc:  # noqa: BLE001 - any spawn failure means unusable
             cap.errors.append(f"could not run --version: {redact(exc)}")
             cap.level = INSTALLED_UNVERIFIED
-            cap.probe_detail = "CLI found but not runnable"
+            cap.probe_detail = f"CLI found at {exe} but not runnable: {redact(exc)}"
             return cap
-        cap.level = INSTALLED_UNVERIFIED
-        cap.probe_detail = f"installed ({cap.version or 'version unknown'}); not yet execution-verified"
+        version_text = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+        first_line = version_text.splitlines()[0] if version_text else ""
+        if proc.returncode == 0 and first_line:
+            # 'installed' means a CLI that actually runs, not a path that exists.
+            cap.installed = True
+            cap.version = first_line
+            cap.level = INSTALLED_UNVERIFIED
+            cap.probe_detail = f"installed ({first_line}); not yet execution-verified"
+        else:
+            cap.errors.append(f"'--version' exited {proc.returncode}")
+            cap.level = INSTALLED_UNVERIFIED
+            cap.probe_detail = f"CLI found at {exe} but '--version' failed (exit {proc.returncode})"
         return cap
 
     def probe(self, *, scratch_dir: Optional[Path] = None) -> ClaudeCodeCapability:
@@ -207,7 +233,7 @@ class ClaudeCodeExecutor:
         if cap.level in (NOT_CONFIGURED, NOT_INSTALLED):
             return cap
         exe = cap.executable
-        argv = [exe, "--output-format", "json", "-p", _PROBE_PROMPT]
+        argv = self._invocation(exe, ["--output-format", "json", "-p", _PROBE_PROMPT])
         ok, reason = Policy.validate_agent_command(argv)
         if not ok:
             cap.level = INSTALLED_UNVERIFIED
@@ -220,10 +246,8 @@ class ClaudeCodeExecutor:
             proc = self.runner(
                 argv,
                 cwd=str(scratch),
-                capture_output=True,
-                text=True,
                 timeout=self.config.probe_timeout,
-                shell=False,
+                **_RUN_KW,
             )
         except subprocess.TimeoutExpired:
             cap.level = INSTALLED_UNVERIFIED
@@ -257,8 +281,12 @@ class ClaudeCodeExecutor:
         else:
             cap.level = INSTALLED_UNVERIFIED
             cap.authenticated = None
+            hint = ""
+            if "unknown option" in output.lower():
+                hint = " (the installed CLI is too old for headless options - run 'claude update')"
             cap.probe_detail = (
-                f"probe invocation failed (exit {proc.returncode}): {redact(output.strip()[-300:])}"
+                f"probe invocation failed (exit {proc.returncode}): "
+                f"{redact(output.strip()[-300:])}{hint}"
             )
         cap.errors.append(cap.probe_detail)
         return cap
@@ -270,20 +298,20 @@ class ClaudeCodeExecutor:
         exe = self.resolve()
         if not exe:
             raise ClaudeCodeError("Claude Code CLI is not installed")
-        argv: List[str] = [exe, "--output-format", "json"]
+        args: List[str] = ["--output-format", "json"]
         mode = (self.config.permission_mode or "").strip()
         if mode:
             if mode in {"bypassPermissions", "dangerously-skip-permissions"}:
                 raise ClaudeCodeError(
                     f"permission_mode {mode!r} is not allowed; use a non-bypassing mode"
                 )
-            argv += ["--permission-mode", mode]
+            args += ["--permission-mode", mode]
         if (self.config.model or "").strip():
-            argv += ["--model", self.config.model.strip()]
+            args += ["--model", self.config.model.strip()]
         if (self.config.extra_args or "").strip():
-            argv += shlex.split(self.config.extra_args, posix=False)
-        argv += ["-p", objective]
-        return argv
+            args += shlex.split(self.config.extra_args, posix=False)
+        args += ["-p", objective]
+        return self._invocation(exe, args)
 
     def run_task(
         self,
@@ -321,10 +349,8 @@ class ClaudeCodeExecutor:
             proc = self.runner(
                 argv,
                 cwd=str(workdir),
-                capture_output=True,
-                text=True,
                 timeout=timeout or self.config.timeout,
-                shell=False,
+                **_RUN_KW,
             )
             result.returncode = proc.returncode
             result.stdout = proc.stdout or ""

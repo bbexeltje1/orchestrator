@@ -85,6 +85,34 @@ def test_policy_command_allowlist_contains_claude():
     assert ok, reason
 
 
+def test_policy_command_allowlist_accepts_windows_exe_names():
+    # Windows sys.executable is python.exe; the earlier allowlist refused it,
+    # which blocked the independent pytest verification of the acceptance test.
+    ok, reason = Policy.validate_command(["C:\\Users\\MB\\.venv\\Scripts\\python.exe", "-m", "pytest", "test_greeting.py", "-q"])
+    assert ok, reason
+    ok, reason = Policy.validate_command(["C:\\Program Files\\Git\\cmd\\git.exe", "init"])
+    assert ok, reason
+    ok, reason = Policy.validate_command(["C:\\evil\\evil.exe", "x"])
+    assert not ok
+
+
+def test_policy_agent_command_accepts_windows_script_shims():
+    # npm installs provide claude.cmd; both the bare shim and the cmd.exe /c
+    # wrapper form must be accepted (base name normalisation).
+    ok, reason = Policy.validate_agent_command(
+        ["C:\\Users\\MB\\AppData\\Roaming\\npm\\claude.cmd", "--output-format", "json", "-p", "do it"]
+    )
+    assert ok, reason
+    ok, reason = Policy.validate_agent_command(
+        ["cmd.exe", "/c", "C:\\Users\\MB\\AppData\\Roaming\\npm\\claude.cmd", "--output-format", "json", "-p", "do it"]
+    )
+    assert ok, reason
+    ok, reason = Policy.validate_agent_command(
+        ["cmd.exe", "/c", "C:\\evil\\other.cmd", "-p", "do it"]
+    )
+    assert not ok
+
+
 # -- detection / probe -----------------------------------------------------
 
 
@@ -170,10 +198,53 @@ def test_run_task_captures_output_exit_and_changes(tmp_path, monkeypatch):
     assert result.session_id == "abc"
     assert result.created_files == ["test_greeting.py"]
     assert result.log_path and Path(result.log_path).exists()
-    # prompt is the final argv element; no shell is ever used
+    # prompt is the final argv element; no shell is ever used; output is read
+    # as UTF-8 regardless of the Windows console codepage; stdin is closed.
     argv, kwargs = runner.calls[0]
     assert argv[-2:] == ["-p", "create test_greeting.py"]
     assert kwargs.get("shell") is False
+    assert kwargs.get("encoding") == "utf-8"
+    assert kwargs.get("errors") == "replace"
+    import subprocess as _sp
+
+    assert kwargs.get("stdin") is _sp.DEVNULL
+
+
+def test_run_task_wraps_windows_script_shims(tmp_path, monkeypatch):
+    exe = _exe(tmp_path, "claude.cmd")
+    monkeypatch.setattr("orchestrator.agents.claude_code.shutil.which", lambda name: str(exe))
+    monkeypatch.setenv("COMSPEC", "C:\\Windows\\System32\\cmd.exe")
+    runner = FakeRunner([FakeProc(returncode=1, stdout="")])
+    executor = ClaudeCodeExecutor(ClaudeCodeConfig(), base_dir=tmp_path, runner=runner)
+    executor.run_task("do the thing", tmp_path / "w")
+    argv = runner.calls[0][0]
+    # cmd.exe /c claude.cmd ... -p <prompt>
+    assert argv[0].lower().endswith("cmd.exe")
+    assert argv[1] == "/c"
+    assert argv[2] == str(exe)
+    assert argv[-2:] == ["-p", "do the thing"]
+
+
+def test_probe_classifies_real_cli_login_message(tmp_path, monkeypatch):
+    # Ground truth captured from the real Claude Code CLI 2.1.326 when
+    # unauthenticated. Must be classified as a login problem, not "unknown".
+    exe = _exe(tmp_path)
+    monkeypatch.setattr("orchestrator.agents.claude_code.shutil.which", lambda name: str(exe))
+    envelope = json.dumps(
+        {
+            "type": "result",
+            "is_error": True,
+            "subtype": "success",
+            "result": "Not logged in · Please run /login",
+            "terminal_reason": "api_error",
+            "session_id": "s",
+        }
+    )
+    runner = FakeRunner([FakeProc(stdout="2.1.326\n"), FakeProc(returncode=1, stdout=envelope)])
+    executor = ClaudeCodeExecutor(ClaudeCodeConfig(), base_dir=tmp_path, runner=runner)
+    cap = executor.probe(scratch_dir=tmp_path / "scratch")
+    assert cap.level == INSTALLED_NOT_AUTHENTICATED
+    assert cap.authenticated is False
 
 
 def test_run_task_records_failure_exit_status(tmp_path, monkeypatch):
@@ -255,6 +326,9 @@ class _StubExecutor:
 def test_readiness_reports_claude_rows_and_never_fakes_ready(base_dir, config, db, monkeypatch):
     from orchestrator.app import App
 
+    # Deterministic on EVERY machine (installed or not): simulate no CLI.
+    monkeypatch.setattr("orchestrator.agents.claude_code.shutil.which", lambda name: None)
+
     class _NoArena:
         def connect(self):
             raise AssertionError("offline readiness must not connect")
@@ -283,9 +357,44 @@ def test_readiness_reports_claude_rows_and_never_fakes_ready(base_dir, config, d
     ):
         assert expected in labels
     rows = dict(report.rows)
-    # no CLI on the build machine -> nothing claude-related may be PASS
-    assert rows["Claude Code installed"] != "PASS"
+    # no CLI -> nothing claude-related may be PASS, and offline probes are
+    # honestly reported as unprobed.
+    assert rows["Claude Code installed"] == "BLOCKED"
     assert rows["Claude Code execution available"] == "SKIPPED"  # offline: honestly unprobed
+
+
+def test_readiness_installed_cli_still_not_ready_offline(base_dir, config, db, monkeypatch):
+    """With the CLI PRESENT, offline readiness may show installed=PASS but must
+    never claim authenticated/execution readiness without a real probe."""
+    from orchestrator.app import App
+
+    exe = _exe(base_dir, "claude.exe")
+    monkeypatch.setattr("orchestrator.agents.claude_code.shutil.which", lambda name: str(exe))
+    monkeypatch.setattr(
+        "orchestrator.agents.claude_code.subprocess.run",
+        lambda argv, **kw: FakeProc(stdout="2.1.326 (Claude Code)\n"),
+    )
+
+    class _NoArena:
+        def connect(self):
+            raise AssertionError("offline readiness must not connect")
+
+    app = App.__new__(App)
+    app.config = config
+    app.base_dir = base_dir
+    app.db = db
+    app.arena = _NoArena()
+
+    class _Wf:
+        qwen = None
+        thx = None
+
+    app.workflow = _Wf()
+    report = build_readiness(app, connect_arena=False)
+    rows = dict(report.rows)
+    assert rows["Claude Code installed"] == "PASS"
+    assert rows["Claude Code authenticated"] == "SKIPPED"
+    assert rows["Claude Code execution available"] == "SKIPPED"
 
 
 def test_readiness_pass_only_after_real_probe(base_dir, config, db, monkeypatch):
