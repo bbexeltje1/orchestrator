@@ -79,6 +79,19 @@ the orchestrator's Python processes and the background services recorded in
 `run\` (i.e. started by play.cmd/start.ps1). Services you started yourself are
 yours to manage.
 
+## Tests
+
+**`Offline tests FAIL`** — the full pytest output is printed in the launcher
+console and saved to `logs\pytest-output.txt`. To run the suite directly and
+see everything:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q --disable-warnings
+```
+
+The output names every failing test (`FAILED tests/…::test_…`) and shows the
+failing assertion. Paste that section when asking for help.
+
 ## OmniRoute
 
 **`OmniRoute BLOCKED`** — optional. The orchestrator stays on the direct Qwen

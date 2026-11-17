@@ -1,6 +1,38 @@
-DRIFTLINE ORCHESTRATOR v1.1.1 - TEST REPORT
+DRIFTLINE ORCHESTRATOR v1.1.2 - TEST REPORT
 Generated (UTC): 2026-11-17
 Interpreter: 3.11.2 (build environment; target runtime is Windows Python 3.12)
+
+CHANGE IN v1.1.2 (first real Windows run reconciliation)
+--------------------------------------------------------
+Field results from Windows 10 / PS 5.1.19041 / Python 3.12.10 validated the
+v1.1.1 changes: the stdin config bridge works on PS 5.1, disabled services
+report "disabled in config (not contacted)", llama-server was detected and
+the exact start line was printed, config reported correctly.
+
+Fixed (all three found in the field log):
+  1. Offline-test output was invisible: Invoke-OfflineTests ran pytest
+     inside a function whose output the caller captures
+     ($offline = Invoke-OfflineTests), so the entire pytest output was
+     swallowed. It is now sent to the console via Out-Host and copied to
+     logs\pytest-output.txt via Tee-Object.
+  2. Stray True/False lines in the report: bare Test-* probe calls leaked
+     their boolean return values to the console. All probe call sites now
+     pipe to Out-Null.
+  3. Ollama signature verification was too strict for pre-installed
+     binaries: real machines report UnknownError/NotTrusted when the
+     chain/revocation check cannot complete (offline CRL, proxy, security
+     software) even for a genuine Ollama install. Pre-installed binaries
+     are now accepted when the signer certificate matches Ollama and
+     there is no evidence of tampering (HashMismatch/NotSigned still
+     refuse); downloaded installers keep the strict Valid-only check
+     before execution.
+
+Still open: the underlying offline-test failure on the Windows box (exit
+code 1 = real assertion failure, collection was fine). Its output was
+hidden by bug 1; re-run and capture logs\pytest-output.txt.
+
+NOTE: v1.1.1 reconciliation, v1.1.0 feature set and v1.0.1 fix history are
+preserved below.
 
 CHANGE IN v1.1.1 (Windows diagnostic reconciliation)
 ----------------------------------------------------

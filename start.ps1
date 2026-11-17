@@ -37,7 +37,7 @@ try {
 }
 catch { }
 
-$Script:AppVersion = '1.1.1'
+$Script:AppVersion = '1.1.2'
 $Script:Root = $PSScriptRoot
 if (-not $Script:Root) { $Script:Root = (Get-Location).Path }
 Set-Location -Path $Script:Root
@@ -246,18 +246,40 @@ function Get-OllamaPath {
     return $null
 }
 
-function Test-OllamaSignature($Path) {
+function Test-OllamaSignature {
+    param(
+        [string]$Path,
+        [switch]$RequireValid
+    )
     if (-not $Path) { return $false }
     $signature = Get-AuthenticodeSignature -FilePath $Path
-    if ($signature.Status -ne 'Valid') {
-        Write-Host "  Ollama signature status: $($signature.Status)" -ForegroundColor Yellow
+    $signer = ''
+    if ($signature.SignerCertificate) { $signer = $signature.SignerCertificate.Subject }
+    if ($signature.Status -eq 'Valid' -and $signer -match 'Ollama') { return $true }
+    if ($RequireValid) {
+        Write-Host "  Signature status: $($signature.Status) / signer: $signer" -ForegroundColor Yellow
         return $false
     }
-    if ($signature.SignerCertificate.Subject -notmatch 'Ollama') {
-        Write-Host "  Ollama signer: $($signature.SignerCertificate.Subject)" -ForegroundColor Yellow
+    # Already-installed binary: chain/revocation checks can fail on real
+    # machines (offline CRL, proxy, security software) and report
+    # UnknownError/NotTrusted for a genuine Ollama install. Only refuse on
+    # evidence of tampering or no signature at all.
+    if ($signature.Status -eq 'HashMismatch') {
+        Write-Host '  Ollama signature status: HashMismatch (file modified after signing) - refusing to use it.' -ForegroundColor Yellow
         return $false
     }
-    return $true
+    if ($signature.Status -eq 'NotSigned' -or -not $signer) {
+        Write-Host "  Ollama signature status: $($signature.Status) - refusing to use it." -ForegroundColor Yellow
+        return $false
+    }
+    if ($signer -match 'Ollama') {
+        Write-Host "  Ollama signature status: $($signature.Status) (chain/revocation not fully verified); signer certificate matches Ollama:" -ForegroundColor Yellow
+        Write-Host "    $signer" -ForegroundColor DarkGray
+        Write-Host '  Using the existing installation as-is. Reinstall from https://ollama.com if you do not trust it.' -ForegroundColor DarkGray
+        return $true
+    }
+    Write-Host "  Ollama signer does not match Ollama ($signer) - refusing to use it." -ForegroundColor Yellow
+    return $false
 }
 
 function Install-Ollama {
@@ -269,7 +291,7 @@ function Install-Ollama {
     $installer = Join-Path $env:TEMP 'OllamaSetup.exe'
     Write-Host "Downloading $Script:OllamaUrl" -ForegroundColor Cyan
     Invoke-WebRequest -Uri $Script:OllamaUrl -OutFile $installer -UseBasicParsing
-    if (-not (Test-OllamaSignature $installer)) {
+    if (-not (Test-OllamaSignature -Path $installer -RequireValid)) {
         Remove-Item $installer -ErrorAction SilentlyContinue
         throw 'Ollama installer signature could not be verified. Refusing to run it.'
     }
@@ -346,7 +368,7 @@ function Test-HttpHealth {
 }
 
 function Invoke-ArenaBridgeProbe {
-    $body = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"driftline-start","version":"1.1.1"}}}'
+    $body = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"driftline-start","version":"1.1.2"}}}'
     return Test-HttpHealth -Url $Script:ArenaUrl -Method 'Post' -Body $body `
         -ContentType 'application/json' -Headers @{ Accept = 'application/json, text/event-stream' }
 }
@@ -636,11 +658,21 @@ function Invoke-OfflineTests {
     Write-Host ''
     Write-Host 'Running offline tests (no external services)...' -ForegroundColor Cyan
     Install-TestDependencies
+    if (-not (Test-Path $Script:LogDir)) { New-Item -ItemType Directory -Path $Script:LogDir | Out-Null }
+    $testLog = Join-Path $Script:LogDir 'pytest-output.txt'
     $env:PYTHONPATH = $Script:Root
-    & $Script:VenvPython -m pytest -q --disable-warnings
+    # Out-Host sends the pytest output to the console without it being
+    # captured as this function's return value (the caller assigns it), and
+    # Tee-Object keeps a copy for diagnosis. A plain `& pytest` here would
+    # print nothing visible.
+    & $Script:VenvPython -m pytest -q --disable-warnings |
+        Tee-Object -FilePath $testLog | Out-Host
     $code = $LASTEXITCODE
     if ($code -eq 0) { Write-Status 'Offline tests' 'PASS' 'all tests passed' }
-    else { Write-Status 'Offline tests' 'FAIL' "pytest exited with $code"; Add-Error 'Offline tests failed.' }
+    else {
+        Write-Status 'Offline tests' 'FAIL' "pytest exited with $code (full output: logs\pytest-output.txt)"
+        Add-Error 'Offline tests failed.'
+    }
     return $code
 }
 
@@ -694,7 +726,7 @@ try {
 
     Initialize-VirtualEnv
     Install-Dependencies
-    Test-Git
+    Test-Git | Out-Null
     Initialize-Config
     $Script:ServicesConfig = Get-ServicesConfig
 
@@ -789,9 +821,9 @@ try {
         Write-Host '  services.auto_start is false: services are probed but never started.' -ForegroundColor DarkGray
     }
 
-    Test-Qwen
-    Test-OmniRoute
-    Test-ArenaBridge
+    Test-Qwen | Out-Null
+    Test-OmniRoute | Out-Null
+    Test-ArenaBridge | Out-Null
 
     $offline = Invoke-OfflineTests
     if ($offline -ne 0) {
