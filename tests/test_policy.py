@@ -1,6 +1,6 @@
 """Policy enforcement tests."""
 
-from orchestrator.models import Decision, is_safe_branch, redact
+from orchestrator.models import Decision, is_safe_branch, is_safe_repo_path, redact
 from orchestrator.policy import (
     Effect,
     Operation,
@@ -90,6 +90,30 @@ def test_branch_validation():
     assert not is_safe_branch("a..b")
     assert not is_safe_branch("  ")
     assert not is_safe_branch("feature;rm")
+
+
+def test_repo_path_validation_accepts_real_paths():
+    # The exact Windows pytest tmp path that v1.1.2 rejected (missing drive
+    # colon in the whitelist) - must be accepted on every platform.
+    assert is_safe_repo_path(
+        "C:\\Users\\MB\\AppData\\Local\\Temp\\pytest-of-MB\\pytest-3\\test_git_inspection0"
+    )
+    assert is_safe_repo_path("C:/Users/MB/DRIFTLINE")
+    assert is_safe_repo_path("C:\\Program Files\\My Repo")
+    assert is_safe_repo_path("\\\\server\\share\\repo")
+    assert is_safe_repo_path("/home/user/project")
+    assert is_safe_repo_path("relative/repo")
+    assert is_safe_repo_path(".")
+
+
+def test_repo_path_validation_rejects_unsafe_paths():
+    assert not is_safe_repo_path("../etc")
+    assert not is_safe_repo_path("C:\\repos\\..\\..\\Windows")
+    assert not is_safe_repo_path("repo\x00hidden")
+    assert not is_safe_repo_path(" repo")
+    assert not is_safe_repo_path("repo\n")
+    assert not is_safe_repo_path("C:bad:colon")
+    assert not is_safe_repo_path("")
 
 
 def test_redaction():

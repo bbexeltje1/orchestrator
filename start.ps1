@@ -37,7 +37,7 @@ try {
 }
 catch { }
 
-$Script:AppVersion = '1.1.2'
+$Script:AppVersion = '1.1.3'
 $Script:Root = $PSScriptRoot
 if (-not $Script:Root) { $Script:Root = (Get-Location).Path }
 Set-Location -Path $Script:Root
@@ -368,7 +368,7 @@ function Test-HttpHealth {
 }
 
 function Invoke-ArenaBridgeProbe {
-    $body = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"driftline-start","version":"1.1.2"}}}'
+    $body = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"driftline-start","version":"1.1.3"}}}'
     return Test-HttpHealth -Url $Script:ArenaUrl -Method 'Post' -Body $body `
         -ContentType 'application/json' -Headers @{ Accept = 'application/json, text/event-stream' }
 }

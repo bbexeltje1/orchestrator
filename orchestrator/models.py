@@ -249,14 +249,27 @@ def is_safe_branch(branch: str) -> bool:
 
 
 def is_safe_repo_path(path: str) -> bool:
-    """Basic repository path validation (no traversal, no control chars)."""
+    """Basic repository path validation (no traversal, no control chars).
+
+    Accepts POSIX paths, Windows drive paths (``C:\\...`` or ``C:/...``) and
+    UNC paths (``\\\\server\\share``); rejects traversal segments, NUL/control
+    characters and anything outside a conservative character whitelist. The
+    drive prefix (``C:``) or UNC prefix is validated separately so the
+    whitelist itself stays tight.
+    """
     if not path or "\x00" in path:
         return False
     if path != path.strip():
         return False
     if ".." in path.replace("\\", "/").split("/"):
         return False
-    return bool(_SAFE_PATH_RE.match(path))
+    body = path
+    drive = re.match(r"^[A-Za-z]:", body)
+    if drive:
+        body = body[drive.end() :]
+    elif body.startswith("\\\\"):
+        body = body[2:]
+    return bool(_SAFE_PATH_RE.match(body))
 
 
 def redact(text: Any, secrets: Optional[List[str]] = None) -> str:

@@ -1,6 +1,36 @@
-DRIFTLINE ORCHESTRATOR v1.1.2 - TEST REPORT
+DRIFTLINE ORCHESTRATOR v1.1.3 - TEST REPORT
 Generated (UTC): 2026-11-17
 Interpreter: 3.11.2 (build environment; target runtime is Windows Python 3.12)
+
+CHANGE IN v1.1.3 (Windows test failure root cause)
+--------------------------------------------------
+The Windows pytest output (captured via logs\pytest-output.txt flow) showed
+3 failures, all with one root cause:
+
+  is_safe_repo_path() rejected every absolute Windows path because the
+  character whitelist _SAFE_PATH_RE did not include the drive-letter
+  colon ("C:" is not in [A-Za-z0-9._\-/\\ ]). POSIX paths passed, so the
+  bug was invisible on build hosts; the suite had never run on Windows.
+  A latent v1.0.1 platform bug, now fixed.
+
+Fixed:
+  1. is_safe_repo_path() accepts Windows drive paths (C:\... and C:/...)
+     and UNC paths (\\server\share): the drive/UNC prefix is validated
+     separately so the whitelist stays tight. Traversal (".." segments),
+     NUL/control characters and non-whitelisted characters are still
+     rejected exactly as before. Relative paths ("." used by the
+     readiness report) keep working.
+  2. Regression tests added with the EXACT failing path strings from the
+     Windows traceback, plus rejection cases (traversal, embedded colon
+     outside drive position, control chars, leading space).
+
+Expected effect: test_verification.py::test_git_inspection,
+test_verification.py::test_git_finds_parent_repo and the cascading
+test_packaging.py::test_extracted_package_passes_offline_tests all pass.
+
+Tests: 118/118 offline in the build environment (116 + 2 new). Direct
+validation of the exact Windows strings from the field traceback passed.
+Not claimed: Windows execution - confirm with the acceptance run below.
 
 CHANGE IN v1.1.2 (first real Windows run reconciliation)
 --------------------------------------------------------
